@@ -1996,3 +1996,122 @@ def with_new_head(encoder, n_out, seed=0):
     # and a freshly initialized classification head.
     return classifier
 
+# Step 22 - distill
+def distill(teacher, student, X, tau=2.0, steps=600, batch=256,
+            lr=1e-3, seed=0, augment=None):
+
+    # Validate the temperature.
+    if tau <= 0:
+        raise ValueError("tau must be positive.")
+
+    # Validate the input dataset.
+    X = np.asarray(X, dtype=np.float32)
+
+    if X.ndim != 2 or len(X) == 0:
+        raise ValueError("X must be a non-empty 2D array.")
+
+    if not np.all(np.isfinite(X)):
+        raise ValueError("X must contain only finite values.")
+
+    # ---------------------------------------------------------
+    # 1. Generate teacher predictions in chunks of 1000.
+    # ---------------------------------------------------------
+
+    teacher_targets = []
+    teacher_labels = []
+
+    for start in range(0, len(X), 1000):
+
+        end = min(start + 1000, len(X))
+
+        # Extract the current batch.
+        x_batch = Tensor(X[start:end])
+
+        # Obtain teacher logits without performing any training.
+        logits = teacher(x_batch).numpy()
+
+        logits = np.asarray(logits, dtype=np.float64)
+
+        # Store the teacher's predicted classes.
+        teacher_labels.append(
+            np.argmax(logits, axis=1)
+        )
+
+        # -----------------------------------------------------
+        # 2. Calculate numerically stable soft targets.
+        # -----------------------------------------------------
+
+        # Apply temperature scaling.
+        scaled_logits = logits / tau
+
+        # Subtract the maximum value in each row
+        # for numerical stability.
+        scaled_logits = (
+            scaled_logits
+            - np.max(scaled_logits, axis=1, keepdims=True)
+        )
+
+        # Convert scaled logits into exponentials.
+        exp_logits = np.exp(scaled_logits)
+
+        # Normalize to obtain probability distributions.
+        probs = exp_logits / np.sum(
+            exp_logits,
+            axis=1,
+            keepdims=True
+        )
+
+        # Store the soft targets as float32.
+        teacher_targets.append(
+            probs.astype(np.float32)
+        )
+
+    # Combine all teacher predictions and targets.
+    P = np.concatenate(teacher_targets, axis=0)
+
+    teacher_labels = np.concatenate(
+        teacher_labels,
+        axis=0
+    )
+
+    # ---------------------------------------------------------
+    # 3. Train the student using soft-target distillation.
+    # ---------------------------------------------------------
+
+    train_soft(
+        student,
+        X,
+        P,
+        steps=steps,
+        batch=batch,
+        lr=lr,
+        tau=tau,
+        seed=seed,
+        augment=augment
+    )
+
+    # ---------------------------------------------------------
+    # 4. Evaluate teacher-student prediction agreement.
+    # ---------------------------------------------------------
+
+    # Generate student probabilities in fixed-size chunks.
+    student_probs = predict_proba(
+        student,
+        X,
+        batch=1000
+    )
+
+    # Obtain the student's predicted classes.
+    student_labels = np.argmax(
+        student_probs,
+        axis=1
+    )
+
+    # Calculate the fraction of matching predictions.
+    agreement = float(
+        np.mean(student_labels == teacher_labels)
+    )
+
+    # Return teacher-student agreement.
+    return agreement
+
