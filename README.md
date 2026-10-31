@@ -26,6 +26,7 @@ python scaffold.py
 - [x] **14.** unlabeled_losses
 - [x] **15.** mutual_information_loss
 - [x] **16.** consistency_loss
+- [x] **17.** vat_direction
 
 ---
 

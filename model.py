@@ -1614,3 +1614,65 @@ def make_consistency_loss(kind="mse"):
 
     return consistency_objective
 
+# Step 17 - vat_direction
+def vat_direction(model, x, d, xi=1e-6):
+    # Validate input dimensions and perturbation magnitude.
+    if len(x.shape) != 2 or x.shape != d.shape:
+        raise ValueError("x and d must have the same (B, D) shape.")
+
+    if xi <= 0:
+        raise ValueError("xi must be positive.")
+
+    # ---------------------------------------------------------
+    # 1. Obtain the reference predictions from clean inputs.
+    # ---------------------------------------------------------
+
+    # Compute clean-input class probabilities.
+    # Detach them so they remain constant during VAT optimization.
+    p = model(x).softmax(-1).detach()
+
+    # ---------------------------------------------------------
+    # 2. Normalize the random direction.
+    # ---------------------------------------------------------
+
+    # Calculate the L2 norm of each row.
+    # Add epsilon to prevent division by zero.
+    d_norm = (d * d).sum(axis=1, keepdim=True).sqrt() + 1e-12
+
+    # Normalize each perturbation direction to unit L2 norm.
+    d_unit = d / d_norm
+
+    # Scale the normalized direction by xi.
+    r = xi * d_unit
+
+    # ---------------------------------------------------------
+    # 3. Calculate the KL divergence for the perturbed inputs.
+    # ---------------------------------------------------------
+
+    # Obtain predictions for x + r.
+    logits_prime = model(x + r)
+
+    # Calculate the KL divergence:
+    # KL(p || p_prime)
+    #
+    # Sum across classes and the entire batch to obtain
+    # a scalar objective for gradient computation.
+    k1 = (
+        p * (
+            (p + 1e-8).log()
+            - logits_prime.log_softmax(-1)
+        )
+    ).sum()
+
+    # ---------------------------------------------------------
+    # 4. Calculate the gradient with respect to r.
+    # ---------------------------------------------------------
+
+    # Obtain the gradient of the KL divergence with respect
+    # to the perturbation tensor.
+    #
+    # Return the detached gradient without normalization.
+    direction = k1.gradient(r)[0].detach()
+
+    return direction
+
