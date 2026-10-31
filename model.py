@@ -2935,6 +2935,8 @@ def aulc(curve):
 
 # Step 27 - forty_labels_report
 import time
+import numpy as np
+from tinygrad import Tensor
 
 
 def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
@@ -2955,11 +2957,9 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
     if al_rounds < 0:
         raise ValueError("al_rounds must be non-negative.")
 
-    # Scale all training and iteration step counts.
     def scaled(n):
         return int(max(1, round(n * scale)))
 
-    # Common MLP architecture for the experiments.
     SIZES = [784, 256, 128, 10]
 
     # ---------------------------------------------------------
@@ -2983,12 +2983,9 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
     y_test = d["y_test"]
 
     # ---------------------------------------------------------
-    # 3. Define the two augmentation strategies.
+    # 3. Define augmentation strategies.
     # ---------------------------------------------------------
 
-    # Standard augmentation: translation and Gaussian noise.
-    # No horizontal flipping because mirrored digits can change
-    # the identity of the original digit.
     aug = lambda X, rng: augment_batch(
         X,
         rng,
@@ -2996,7 +2993,6 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         noise_std=0.05
     )
 
-    # Strong augmentation for SimCLR pretraining.
     strong = lambda X, rng: augment_batch(
         X,
         rng,
@@ -3005,7 +3001,6 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         cutout=10
     )
 
-    # Store all experimental results.
     accuracy_results = {}
     seconds = {}
 
@@ -3015,7 +3010,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     start = time.perf_counter()
 
-    # Baseline 1: Supervised MLP without augmentation.
+    # Supervised MLP without augmentation.
     supervised_model = MLP(
         SIZES,
         seed=seed
@@ -3035,7 +3030,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         y_test
     )
 
-    # Baseline 2: Supervised MLP with augmentation.
+    # Supervised MLP with augmentation.
     supervised_aug_model = MLP(
         SIZES,
         seed=seed
@@ -3064,13 +3059,12 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     start = time.perf_counter()
 
-    # Fit PCA exclusively on the unlabeled pool.
+    # Fit PCA on the unlabeled pool.
     mean, components = pca_fit(
         X_unlab,
         50
     )
 
-    # Embed both labeled and unlabeled images using the same PCA.
     Z_lab = pca_transform(
         X_lab,
         mean,
@@ -3083,8 +3077,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         components
     )
 
-    # Construct the complete graph dataset:
-    # labeled nodes first, followed by unlabeled nodes.
+    # Labeled nodes first, followed by unlabeled nodes.
     Z_all = np.concatenate(
         [Z_lab, Z_unlab],
         axis=0
@@ -3099,7 +3092,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     labeled_idx = np.arange(n_lab)
 
-    # Construct the symmetric kNN similarity graph.
+    # Construct the symmetric kNN graph.
     W = knn_graph(
         Z_all,
         k=10
@@ -3123,7 +3116,6 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         axis=1
     )
 
-    # Transductive accuracy on the unlabeled pool.
     accuracy_results["labelprop_transductive"] = float(
         np.mean(iter_predictions == y_unlab)
     )
@@ -3144,7 +3136,6 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         axis=1
     )
 
-    # Accuracy on the unlabeled pool.
     accuracy_results["labelprop_harmonic"] = float(
         np.mean(harmonic_predictions == y_unlab)
     )
@@ -3158,32 +3149,35 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
     # C. Class counts from both propagation methods.
     # ---------------------------------------------------------
 
-    labelprop_class_counts = {
-        "iteration": np.bincount(
-            iter_predictions,
-            minlength=10
-        ).tolist(),
+    iteration_counts = np.bincount(
+        iter_predictions,
+        minlength=10
+    ).tolist()
 
-        "harmonic": np.bincount(
-            harmonic_predictions,
-            minlength=10
-        ).tolist()
+    closed_form_counts = np.bincount(
+        harmonic_predictions,
+        minlength=10
+    ).tolist()
+
+    labelprop_class_counts = {
+        "iteration": iteration_counts,
+        "closed_form": closed_form_counts,
+
+        # Compatibility alias.
+        "harmonic": closed_form_counts
     }
 
     # ---------------------------------------------------------
-    # D. Distil closed-form propagated distributions into an MLP.
+    # D. Distil closed-form distributions into an MLP.
     # ---------------------------------------------------------
 
-    # The labeled rows receive genuine one-hot labels.
     P_lab = np.eye(
         10,
         dtype=np.float32
     )[y_lab]
 
-    # The unlabeled rows receive closed-form harmonic distributions.
     P_unlab = Y_harm[n_lab:].astype(np.float32)
 
-    # Combine all soft targets.
     P_all = np.concatenate(
         [P_lab, P_unlab],
         axis=0
@@ -3237,7 +3231,6 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     start = time.perf_counter()
 
-    # Define all four unlabeled learning objectives.
     vat_loss_fn = make_vat_loss(
         eps=2.0,
         xi=1e-3,
@@ -3259,19 +3252,15 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     pool_min_class = {}
 
-    # Store the VAT + MI model because it will become
-    # the teacher model in the distillation experiment.
     vat_mi_model = None
 
     for name, unlabeled_loss_fn in ssl_losses.items():
 
-        # Start each experiment with a fresh MLP.
         model = MLP(
             SIZES,
             seed=seed
         )
 
-        # Train using the selected unlabeled objective.
         train_ssl(
             model,
             X_lab,
@@ -3285,14 +3274,12 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
             seed=seed
         )
 
-        # Record test accuracy.
         accuracy_results[name] = accuracy(
             model,
             X_test,
             y_test
         )
 
-        # Examine the predicted class distribution on the pool.
         pool_probs = predict_proba(
             model,
             X_unlab
@@ -3308,13 +3295,10 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
             minlength=10
         )
 
-        # Record the smallest number of predictions assigned
-        # to any one of the ten classes.
         pool_min_class[name] = int(
             class_counts.min()
         )
 
-        # Preserve the VAT + MI teacher.
         if name == "vat_mi":
             vat_mi_model = model
 
@@ -3326,10 +3310,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     start = time.perf_counter()
 
-    # ---------------------------------------------------------
-    # A. Contrastive pretraining.
-    # ---------------------------------------------------------
-
+    # Contrastive pretraining.
     encoder = MLP(
         [784, 512, 128, 64],
         seed=seed
@@ -3346,10 +3327,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         seed=seed
     )
 
-    # ---------------------------------------------------------
-    # B. Fine-tuning with a fresh classifier head.
-    # ---------------------------------------------------------
-
+    # Fine-tuning with a new classifier head.
     simclr_finetune_model = with_new_head(
         encoder,
         n_out=10,
@@ -3372,10 +3350,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         y_test
     )
 
-    # ---------------------------------------------------------
-    # C. Fine-tuning with VAT + mutual information.
-    # ---------------------------------------------------------
-
+    # Fine-tuning with VAT and mutual information.
     simclr_vat_mi_model = with_new_head(
         encoder,
         n_out=10,
@@ -3410,10 +3385,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     start = time.perf_counter()
 
-    # ---------------------------------------------------------
-    # A. Train a small student using the VAT + MI teacher.
-    # ---------------------------------------------------------
-
+    # A. Student trained using the VAT + MI teacher.
     student_distilled = MLP(
         [784, 64, 10],
         seed=seed + 1
@@ -3437,10 +3409,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         y_test
     )
 
-    # ---------------------------------------------------------
-    # B. Train an identical student using only genuine labels.
-    # ---------------------------------------------------------
-
+    # B. Identical student trained using genuine labels only.
     student_40_labels = MLP(
         [784, 64, 10],
         seed=seed + 1
@@ -3469,8 +3438,7 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     start = time.perf_counter()
 
-    # Create a separate dataset with two initial labels per class.
-    # This gives the active-learning study 20 initial labels.
+    # Use two initial labels per class.
     d2 = load_forty_labels(
         n_per_class=2,
         n_unlabeled=n_unlabeled,
@@ -3478,7 +3446,6 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
         seed=seed
     )
 
-    # Use at most 2000 pool samples for active learning.
     al_pool_size = min(
         2000,
         n_unlabeled
@@ -3489,7 +3456,6 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
             "The active-learning pool is too small for the requested rounds."
         )
 
-    # Compare the three acquisition strategies.
     strategies = [
         "random",
         "entropy",
@@ -3501,7 +3467,6 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
 
     for strategy in strategies:
 
-        # Run the pool-based active-learning experiment.
         curve = active_learning_curve(
             d2,
             strategy,
@@ -3515,10 +3480,8 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
             seed=seed
         )
 
-        # Store the learning curve.
         active_learning_results[strategy] = curve
 
-        # Calculate the mean test accuracy across the curve.
         aulc_results[strategy] = aulc(curve)
 
     seconds["active_learning"] = time.perf_counter() - start
@@ -3530,32 +3493,24 @@ def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
     report = {
         "seed": seed,
 
-        # Thirteen test or pool accuracy measurements.
         "accuracy": accuracy_results,
 
-        # Label propagation diagnostics.
         "harmonic_agreement": harmonic_agreement,
+
         "labelprop_class_counts": labelprop_class_counts,
 
-        # Self-training history.
         "self_training": self_training_history,
 
-        # Minimum predicted class count for each SSL objective.
         "pool_min_class": pool_min_class,
 
-        # SimCLR pretraining history.
         "simclr_loss": simclr_history,
 
-        # Knowledge distillation agreement.
         "distill_agreement": distill_agreement,
 
-        # Active-learning learning curves.
         "active_learning": active_learning_results,
 
-        # Area under each active-learning curve.
         "aulc": aulc_results,
 
-        # Wall-clock time for each experimental block.
         "seconds": seconds
     }
 
