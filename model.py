@@ -942,3 +942,157 @@ def label_propagation(W, labeled_idx, y_labeled, n_classes,
     # Return the propagated class distributions.
     return Y.astype(np.float64)
 
+# Step 10 - harmonic_solution
+from scipy.sparse.linalg import spsolve
+
+
+def harmonic_solution(W, labeled_idx, y_labeled, n_classes):
+
+    # Convert the graph into a float64 CSR sparse matrix.
+    W = sp.csr_matrix(W, dtype=np.float64)
+
+    # Validate the graph.
+    if W.ndim != 2 or W.shape[0] != W.shape[1]:
+        raise ValueError("W must be a square adjacency matrix.")
+
+    if not np.all(np.isfinite(W.data)):
+        raise ValueError("W must contain only finite values.")
+
+    if np.any(W.data < 0):
+        raise ValueError("W must contain non-negative weights.")
+
+    n = W.shape[0]
+
+    # Validate the number of classes.
+    if not isinstance(n_classes, (int, np.integer)) or isinstance(n_classes, (bool, np.bool_)) or n_classes <= 0:
+        raise ValueError("n_classes must be a positive integer.")
+
+    # Convert labeled indices and labels to NumPy arrays.
+    labeled_idx = np.asarray(labeled_idx, dtype=np.int64).reshape(-1)
+    y_labeled = np.asarray(y_labeled, dtype=np.int64).reshape(-1)
+
+    if len(labeled_idx) != len(y_labeled):
+        raise ValueError("labeled_idx and y_labeled must have equal lengths.")
+
+    if len(labeled_idx) == 0:
+        raise ValueError("At least one labeled node is required.")
+
+    if np.any(labeled_idx < 0) or np.any(labeled_idx >= n):
+        raise ValueError("labeled_idx contains invalid node indices.")
+
+    if len(np.unique(labeled_idx)) != len(labeled_idx):
+        raise ValueError("labeled_idx must not contain duplicates.")
+
+    if np.any(y_labeled < 0) or np.any(y_labeled >= n_classes):
+        raise ValueError("y_labeled contains invalid class indices.")
+
+    # ---------------------------------------------------------
+    # 1. Construct the column-normalized transition matrix.
+    # ---------------------------------------------------------
+
+    # Calculate the sum of each column of W.
+    col_sum = np.asarray(W.sum(axis=0)).ravel()
+
+    # Compute the reciprocal of each column sum.
+    inv_col_sum = np.zeros_like(col_sum, dtype=np.float64)
+
+    np.divide(
+        1.0,
+        col_sum,
+        out=inv_col_sum,
+        where=col_sum != 0
+    )
+
+    # Construct the transition matrix:
+    # T[i, j] = W[i, j] / sum_k W[k, j]
+    T = (
+        W @ sp.diags(inv_col_sum, format="csr")
+    ).tocsr()
+
+    # ---------------------------------------------------------
+    # 2. Identify labeled and unlabeled nodes.
+    # ---------------------------------------------------------
+
+    L = labeled_idx
+
+    # All remaining nodes, in increasing index order.
+    U = np.setdiff1d(
+        np.arange(n),
+        L
+    )
+
+    # ---------------------------------------------------------
+    # 3. Initialize the full label distribution matrix.
+    # ---------------------------------------------------------
+
+    Y = np.zeros(
+        (n, n_classes),
+        dtype=np.float64
+    )
+
+    # Assign one-hot labels to the labeled nodes.
+    Y[L, y_labeled] = 1.0
+
+    # ---------------------------------------------------------
+    # 4. Solve the harmonic fixed-point equation.
+    # ---------------------------------------------------------
+
+    if len(U) > 0:
+
+        # Extract the unlabeled-to-unlabeled transition matrix.
+        T_UU = T[U, :][:, U].tocsc()
+
+        # Extract the unlabeled-to-labeled transition matrix.
+        T_UL = T[U, :][:, L].tocsr()
+
+        # Construct the identity matrix.
+        I = sp.eye(
+            len(U),
+            format="csc",
+            dtype=np.float64
+        )
+
+        # Construct the sparse linear system:
+        # (I - T_UU) Y_U = T_UL Y_L
+        A = I - T_UU
+
+        # Extract the one-hot labels of the labeled nodes.
+        Y_L = Y[L]
+
+        # Calculate the right-hand side.
+        rhs = T_UL @ Y_L
+
+        # Solve the sparse linear system without matrix inversion.
+        Y_U = spsolve(A, rhs)
+
+        # Ensure a consistent two-dimensional array shape.
+        Y_U = np.asarray(
+            Y_U,
+            dtype=np.float64
+        ).reshape(len(U), n_classes)
+
+        # Remove tiny negative values caused by numerical precision.
+        Y_U = np.maximum(Y_U, 0.0)
+
+        # -----------------------------------------------------
+        # 5. Normalize the unlabeled node distributions.
+        # -----------------------------------------------------
+
+        # Calculate the sum of each unlabeled row.
+        row_sum = Y_U.sum(axis=1, keepdims=True)
+
+        # Normalize each row so its class probabilities sum to one.
+        # Zero-sum rows remain zero.
+        np.divide(
+            Y_U,
+            row_sum,
+            out=Y_U,
+            where=row_sum > 0
+        )
+
+        # Store the normalized harmonic solutions.
+        Y[U] = Y_U
+
+    # Return the complete label distribution matrix.
+    return Y.astype(np.float64)
+
