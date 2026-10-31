@@ -2773,3 +2773,631 @@ def aulc(curve):
     # Return the mean accuracy across all learning-curve points.
     return float(np.mean(accuracies))
 
+# Step 27 - forty_labels_report
+import time
+
+
+def forty_labels_report(seed=0, scale=1.0, n_unlabeled=10000, al_rounds=5):
+
+    # ---------------------------------------------------------
+    # 1. Validate configuration and define helper functions.
+    # ---------------------------------------------------------
+
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("scale must be a positive finite number.")
+
+    if n_unlabeled < 50:
+        raise ValueError("n_unlabeled must be at least 50 for PCA.")
+
+    if n_unlabeled > 59960:
+        raise ValueError("n_unlabeled exceeds the available MNIST training pool.")
+
+    if al_rounds < 0:
+        raise ValueError("al_rounds must be non-negative.")
+
+    # Scale all training and iteration step counts.
+    def scaled(n):
+        return int(max(1, round(n * scale)))
+
+    # Common MLP architecture for the experiments.
+    SIZES = [784, 256, 128, 10]
+
+    # ---------------------------------------------------------
+    # 2. Load the forty-label dataset.
+    # ---------------------------------------------------------
+
+    d = load_forty_labels(
+        n_per_class=4,
+        n_unlabeled=n_unlabeled,
+        n_test=2000,
+        seed=seed
+    )
+
+    X_lab = d["X_lab"]
+    y_lab = d["y_lab"]
+
+    X_unlab = d["X_unlab"]
+    y_unlab = d["y_unlab"]
+
+    X_test = d["X_test"]
+    y_test = d["y_test"]
+
+    # ---------------------------------------------------------
+    # 3. Define the two augmentation strategies.
+    # ---------------------------------------------------------
+
+    # Standard augmentation: translation and Gaussian noise.
+    # No horizontal flipping because mirrored digits can change
+    # the identity of the original digit.
+    aug = lambda X, rng: augment_batch(
+        X,
+        rng,
+        max_shift=2,
+        noise_std=0.05
+    )
+
+    # Strong augmentation for SimCLR pretraining.
+    strong = lambda X, rng: augment_batch(
+        X,
+        rng,
+        max_shift=2,
+        noise_std=0.2,
+        cutout=10
+    )
+
+    # Store all experimental results.
+    accuracy_results = {}
+    seconds = {}
+
+    # =========================================================
+    # BLOCK 1: SUPERVISED BASELINES
+    # =========================================================
+
+    start = time.perf_counter()
+
+    # Baseline 1: Supervised MLP without augmentation.
+    supervised_model = MLP(
+        SIZES,
+        seed=seed
+    )
+
+    train_ssl(
+        supervised_model,
+        X_lab,
+        y_lab,
+        steps=scaled(300),
+        seed=seed
+    )
+
+    accuracy_results["supervised"] = accuracy(
+        supervised_model,
+        X_test,
+        y_test
+    )
+
+    # Baseline 2: Supervised MLP with augmentation.
+    supervised_aug_model = MLP(
+        SIZES,
+        seed=seed
+    )
+
+    train_ssl(
+        supervised_aug_model,
+        X_lab,
+        y_lab,
+        steps=scaled(300),
+        augment=aug,
+        seed=seed
+    )
+
+    accuracy_results["supervised_aug"] = accuracy(
+        supervised_aug_model,
+        X_test,
+        y_test
+    )
+
+    seconds["baselines"] = time.perf_counter() - start
+
+    # =========================================================
+    # BLOCK 2: LABEL PROPAGATION
+    # =========================================================
+
+    start = time.perf_counter()
+
+    # Fit PCA exclusively on the unlabeled pool.
+    mean, components = pca_fit(
+        X_unlab,
+        50
+    )
+
+    # Embed both labeled and unlabeled images using the same PCA.
+    Z_lab = pca_transform(
+        X_lab,
+        mean,
+        components
+    )
+
+    Z_unlab = pca_transform(
+        X_unlab,
+        mean,
+        components
+    )
+
+    # Construct the complete graph dataset:
+    # labeled nodes first, followed by unlabeled nodes.
+    Z_all = np.concatenate(
+        [Z_lab, Z_unlab],
+        axis=0
+    )
+
+    X_all = np.concatenate(
+        [X_lab, X_unlab],
+        axis=0
+    )
+
+    n_lab = len(X_lab)
+
+    labeled_idx = np.arange(n_lab)
+
+    # Construct the symmetric kNN similarity graph.
+    W = knn_graph(
+        Z_all,
+        k=10
+    )
+
+    # ---------------------------------------------------------
+    # A. Iterative label propagation.
+    # ---------------------------------------------------------
+
+    Y_iter = label_propagation(
+        W,
+        labeled_idx,
+        y_lab,
+        n_classes=10,
+        n_iter=scaled(200),
+        renormalize=True
+    )
+
+    iter_predictions = np.argmax(
+        Y_iter[n_lab:],
+        axis=1
+    )
+
+    # Transductive accuracy on the unlabeled pool.
+    accuracy_results["labelprop_transductive"] = float(
+        np.mean(iter_predictions == y_unlab)
+    )
+
+    # ---------------------------------------------------------
+    # B. Closed-form harmonic label propagation.
+    # ---------------------------------------------------------
+
+    Y_harm = harmonic_solution(
+        W,
+        labeled_idx,
+        y_lab,
+        n_classes=10
+    )
+
+    harmonic_predictions = np.argmax(
+        Y_harm[n_lab:],
+        axis=1
+    )
+
+    # Accuracy on the unlabeled pool.
+    accuracy_results["labelprop_harmonic"] = float(
+        np.mean(harmonic_predictions == y_unlab)
+    )
+
+    # Agreement between iterative and harmonic predictions.
+    harmonic_agreement = float(
+        np.mean(iter_predictions == harmonic_predictions)
+    )
+
+    # ---------------------------------------------------------
+    # C. Class counts from both propagation methods.
+    # ---------------------------------------------------------
+
+    labelprop_class_counts = {
+        "iteration": np.bincount(
+            iter_predictions,
+            minlength=10
+        ).tolist(),
+
+        "harmonic": np.bincount(
+            harmonic_predictions,
+            minlength=10
+        ).tolist()
+    }
+
+    # ---------------------------------------------------------
+    # D. Distil closed-form propagated distributions into an MLP.
+    # ---------------------------------------------------------
+
+    # The labeled rows receive genuine one-hot labels.
+    P_lab = np.eye(
+        10,
+        dtype=np.float32
+    )[y_lab]
+
+    # The unlabeled rows receive closed-form harmonic distributions.
+    P_unlab = Y_harm[n_lab:].astype(np.float32)
+
+    # Combine all soft targets.
+    P_all = np.concatenate(
+        [P_lab, P_unlab],
+        axis=0
+    )
+
+    labelprop_model = MLP(
+        SIZES,
+        seed=seed
+    )
+
+    train_soft(
+        labelprop_model,
+        X_all,
+        P_all,
+        steps=scaled(600),
+        batch=256,
+        augment=aug,
+        seed=seed
+    )
+
+    accuracy_results["labelprop_mlp"] = accuracy(
+        labelprop_model,
+        X_test,
+        y_test
+    )
+
+    seconds["label_propagation"] = time.perf_counter() - start
+
+    # =========================================================
+    # BLOCK 3: OFFLINE SELF-TRAINING
+    # =========================================================
+
+    start = time.perf_counter()
+
+    self_training_history, self_training_model = self_training_rounds(
+        d,
+        lambda: MLP(SIZES, seed=seed),
+        rounds=2,
+        threshold=0.95,
+        init_steps=scaled(300),
+        steps=scaled(400),
+        augment=aug,
+        seed=seed
+    )
+
+    seconds["self_training"] = time.perf_counter() - start
+
+    # =========================================================
+    # BLOCK 4: ENTROPY, MUTUAL INFORMATION AND VAT
+    # =========================================================
+
+    start = time.perf_counter()
+
+    # Define all four unlabeled learning objectives.
+    vat_loss_fn = make_vat_loss(
+        eps=2.0,
+        xi=1e-3,
+        mi_weight=0.0
+    )
+
+    vat_mi_loss_fn = make_vat_loss(
+        eps=2.0,
+        xi=1e-3,
+        mi_weight=1.0
+    )
+
+    ssl_losses = {
+        "entropy": entropy_loss,
+        "mutual_information": mutual_information_loss,
+        "vat": vat_loss_fn,
+        "vat_mi": vat_mi_loss_fn
+    }
+
+    pool_min_class = {}
+
+    # Store the VAT + MI model because it will become
+    # the teacher model in the distillation experiment.
+    vat_mi_model = None
+
+    for name, unlabeled_loss_fn in ssl_losses.items():
+
+        # Start each experiment with a fresh MLP.
+        model = MLP(
+            SIZES,
+            seed=seed
+        )
+
+        # Train using the selected unlabeled objective.
+        train_ssl(
+            model,
+            X_lab,
+            y_lab,
+            X_unlab=X_unlab,
+            unlabeled_loss=unlabeled_loss_fn,
+            lam=1.0,
+            ramp_steps=scaled(300),
+            steps=scaled(600),
+            augment=aug,
+            seed=seed
+        )
+
+        # Record test accuracy.
+        accuracy_results[name] = accuracy(
+            model,
+            X_test,
+            y_test
+        )
+
+        # Examine the predicted class distribution on the pool.
+        pool_probs = predict_proba(
+            model,
+            X_unlab
+        )
+
+        pool_predictions = np.argmax(
+            pool_probs,
+            axis=1
+        )
+
+        class_counts = np.bincount(
+            pool_predictions,
+            minlength=10
+        )
+
+        # Record the smallest number of predictions assigned
+        # to any one of the ten classes.
+        pool_min_class[name] = int(
+            class_counts.min()
+        )
+
+        # Preserve the VAT + MI teacher.
+        if name == "vat_mi":
+            vat_mi_model = model
+
+    seconds["ssl_losses"] = time.perf_counter() - start
+
+    # =========================================================
+    # BLOCK 5: SIMCLR PRETRAINING AND FINE-TUNING
+    # =========================================================
+
+    start = time.perf_counter()
+
+    # ---------------------------------------------------------
+    # A. Contrastive pretraining.
+    # ---------------------------------------------------------
+
+    encoder = MLP(
+        [784, 512, 128, 64],
+        seed=seed
+    )
+
+    simclr_history = pretrain_simclr(
+        encoder,
+        X_unlab,
+        steps=scaled(1000),
+        batch=256,
+        lr=1e-3,
+        tau=0.1,
+        augment=strong,
+        seed=seed
+    )
+
+    # ---------------------------------------------------------
+    # B. Fine-tuning with a fresh classifier head.
+    # ---------------------------------------------------------
+
+    simclr_finetune_model = with_new_head(
+        encoder,
+        n_out=10,
+        seed=seed
+    )
+
+    train_ssl(
+        simclr_finetune_model,
+        X_lab,
+        y_lab,
+        steps=scaled(300),
+        lr=3e-4,
+        augment=aug,
+        seed=seed
+    )
+
+    accuracy_results["simclr_finetune"] = accuracy(
+        simclr_finetune_model,
+        X_test,
+        y_test
+    )
+
+    # ---------------------------------------------------------
+    # C. Fine-tuning with VAT + mutual information.
+    # ---------------------------------------------------------
+
+    simclr_vat_mi_model = with_new_head(
+        encoder,
+        n_out=10,
+        seed=seed
+    )
+
+    train_ssl(
+        simclr_vat_mi_model,
+        X_lab,
+        y_lab,
+        X_unlab=X_unlab,
+        unlabeled_loss=vat_mi_loss_fn,
+        lam=1.0,
+        ramp_steps=scaled(300),
+        steps=scaled(600),
+        lr=3e-4,
+        augment=aug,
+        seed=seed
+    )
+
+    accuracy_results["simclr_vat_mi"] = accuracy(
+        simclr_vat_mi_model,
+        X_test,
+        y_test
+    )
+
+    seconds["simclr"] = time.perf_counter() - start
+
+    # =========================================================
+    # BLOCK 6: KNOWLEDGE DISTILLATION
+    # =========================================================
+
+    start = time.perf_counter()
+
+    # ---------------------------------------------------------
+    # A. Train a small student using the VAT + MI teacher.
+    # ---------------------------------------------------------
+
+    student_distilled = MLP(
+        [784, 64, 10],
+        seed=seed + 1
+    )
+
+    distill_agreement = distill(
+        vat_mi_model,
+        student_distilled,
+        X_unlab,
+        tau=2.0,
+        steps=scaled(600),
+        batch=256,
+        lr=1e-3,
+        seed=seed,
+        augment=aug
+    )
+
+    accuracy_results["student_distilled"] = accuracy(
+        student_distilled,
+        X_test,
+        y_test
+    )
+
+    # ---------------------------------------------------------
+    # B. Train an identical student using only genuine labels.
+    # ---------------------------------------------------------
+
+    student_40_labels = MLP(
+        [784, 64, 10],
+        seed=seed + 1
+    )
+
+    train_ssl(
+        student_40_labels,
+        X_lab,
+        y_lab,
+        steps=scaled(300),
+        augment=aug,
+        seed=seed
+    )
+
+    accuracy_results["student_40_labels"] = accuracy(
+        student_40_labels,
+        X_test,
+        y_test
+    )
+
+    seconds["distillation"] = time.perf_counter() - start
+
+    # =========================================================
+    # BLOCK 7: ACTIVE LEARNING
+    # =========================================================
+
+    start = time.perf_counter()
+
+    # Create a separate dataset with two initial labels per class.
+    # This gives the active-learning study 20 initial labels.
+    d2 = load_forty_labels(
+        n_per_class=2,
+        n_unlabeled=n_unlabeled,
+        n_test=2000,
+        seed=seed
+    )
+
+    # Use at most 2000 pool samples for active learning.
+    al_pool_size = min(
+        2000,
+        n_unlabeled
+    )
+
+    if al_rounds * 20 > al_pool_size:
+        raise ValueError(
+            "The active-learning pool is too small for the requested rounds."
+        )
+
+    # Compare the three acquisition strategies.
+    strategies = [
+        "random",
+        "entropy",
+        "bald"
+    ]
+
+    active_learning_results = {}
+    aulc_results = {}
+
+    for strategy in strategies:
+
+        # Run the pool-based active-learning experiment.
+        curve = active_learning_curve(
+            d2,
+            strategy,
+            rounds=al_rounds,
+            k=20,
+            pool_size=al_pool_size,
+            M=5,
+            sizes=tuple(SIZES),
+            steps=scaled(150),
+            augment=aug,
+            seed=seed
+        )
+
+        # Store the learning curve.
+        active_learning_results[strategy] = curve
+
+        # Calculate the mean test accuracy across the curve.
+        aulc_results[strategy] = aulc(curve)
+
+    seconds["active_learning"] = time.perf_counter() - start
+
+    # =========================================================
+    # 8. RETURN THE COMPLETE EXPERIMENTAL REPORT.
+    # =========================================================
+
+    report = {
+        "seed": seed,
+
+        # Thirteen test or pool accuracy measurements.
+        "accuracy": accuracy_results,
+
+        # Label propagation diagnostics.
+        "harmonic_agreement": harmonic_agreement,
+        "labelprop_class_counts": labelprop_class_counts,
+
+        # Self-training history.
+        "self_training": self_training_history,
+
+        # Minimum predicted class count for each SSL objective.
+        "pool_min_class": pool_min_class,
+
+        # SimCLR pretraining history.
+        "simclr_loss": simclr_history,
+
+        # Knowledge distillation agreement.
+        "distill_agreement": distill_agreement,
+
+        # Active-learning learning curves.
+        "active_learning": active_learning_results,
+
+        # Area under each active-learning curve.
+        "aulc": aulc_results,
+
+        # Wall-clock time for each experimental block.
+        "seconds": seconds
+    }
+
+    return report
+
