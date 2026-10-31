@@ -15,8 +15,11 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 
+# Module-level MNIST cache
 _MNIST = {}
 
+# Use the current working directory instead of __file__.
+# This works in notebooks and online code editors too.
 _MNIST_DIR = Path.cwd() / "data" / "mnist"
 
 _MNIST_FILES = {
@@ -29,6 +32,7 @@ _MNIST_FILES = {
 
 def _download_mnist():
     """Download and verify MNIST files if they are not already cached."""
+
     _MNIST_DIR.mkdir(parents=True, exist_ok=True)
 
     base_urls = [
@@ -37,17 +41,23 @@ def _download_mnist():
     ]
 
     for filename, expected_md5 in _MNIST_FILES.items():
+
         path = _MNIST_DIR / filename
 
+        # Check whether a valid cached file already exists.
         if path.exists():
             actual_md5 = hashlib.md5(path.read_bytes()).hexdigest()
+
             if actual_md5 == expected_md5:
                 continue
+
             path.unlink()
 
         downloaded = False
 
+        # Try the available download sources.
         for base_url in base_urls:
+
             try:
                 urlretrieve(base_url + filename, str(path))
 
@@ -70,13 +80,19 @@ def _download_mnist():
 
 def _read_mnist_images(path):
     """Read images from an MNIST IDX gzip file."""
+
     with gzip.open(path, "rb") as f:
-        magic, count, rows, cols = struct.unpack(">IIII", f.read(16))
+
+        magic, count, rows, cols = struct.unpack(
+            ">IIII", f.read(16)
+        )
+
         if magic != 2051:
             raise ValueError("Invalid MNIST image file")
 
         images = np.frombuffer(
-            f.read(), dtype=np.uint8
+            f.read(),
+            dtype=np.uint8
         ).reshape(count, rows, cols)
 
     return images
@@ -84,30 +100,42 @@ def _read_mnist_images(path):
 
 def _read_mnist_labels(path):
     """Read labels from an MNIST IDX gzip file."""
+
     with gzip.open(path, "rb") as f:
-        magic, count = struct.unpack(">II", f.read(8))
+
+        magic, count = struct.unpack(
+            ">II", f.read(8)
+        )
+
         if magic != 2049:
             raise ValueError("Invalid MNIST label file")
 
-        labels = np.frombuffer(f.read(), dtype=np.uint8)
+        labels = np.frombuffer(
+            f.read(),
+            dtype=np.uint8
+        )
 
     return labels.astype(np.int64)
 
 
 def _load_mnist():
-    """Load and cache the MNIST dataset."""
+    """Load the complete MNIST dataset."""
+
     _download_mnist()
 
     return {
         "x_train": _read_mnist_images(
             _MNIST_DIR / "train-images-idx3-ubyte.gz"
         ),
+
         "y_train": _read_mnist_labels(
             _MNIST_DIR / "train-labels-idx1-ubyte.gz"
         ),
+
         "x_test": _read_mnist_images(
             _MNIST_DIR / "t10k-images-idx3-ubyte.gz"
         ),
+
         "y_test": _read_mnist_labels(
             _MNIST_DIR / "t10k-labels-idx1-ubyte.gz"
         ),
@@ -120,24 +148,36 @@ def load_forty_labels(
     n_test=2000,
     seed=0
 ):
-    """Build the labeled, unlabeled, and fixed test MNIST splits."""
+    """
+    Create the semi-supervised MNIST dataset split.
 
-    # Load MNIST only once.
+    Returns:
+        X_lab:   Labeled training images
+        y_lab:   Labeled training labels
+        X_unlab: Unlabeled training images
+        y_unlab: True labels for diagnosis only
+        X_test:  Fixed test images
+        y_test:  Test labels
+    """
+
+    # Load MNIST once and reuse the cached data.
     if not _MNIST:
         _MNIST.update(_load_mnist())
 
     x_train = _MNIST["x_train"]
     y_train = _MNIST["y_train"]
+
     x_test = _MNIST["x_test"]
     y_test = _MNIST["y_test"]
 
-    # Generator for labeled and unlabeled training samples.
+    # Random generator for training data.
     rng = np.random.default_rng(seed)
 
-    # 1. Select labeled indices class by class (0 through 9).
+    # Step 1: Select labeled samples class by class.
     labeled_parts = []
 
     for c in range(10):
+
         class_indices = np.flatnonzero(y_train == c)
 
         selected = rng.choice(
@@ -150,7 +190,7 @@ def load_forty_labels(
 
     labeled = np.concatenate(labeled_parts)
 
-    # 2. Select unlabeled samples from the remaining training indices.
+    # Step 2: Select unlabeled samples from the remaining pool.
     rest = np.setdiff1d(
         np.arange(len(y_train)),
         labeled
@@ -162,7 +202,7 @@ def load_forty_labels(
         replace=False
     )
 
-    # 3. Fixed test subset, independent of the training seed.
+    # Step 3: Select a fixed test subset using seed 12345.
     test_rng = np.random.default_rng(12345)
 
     test_indices = test_rng.choice(
@@ -171,27 +211,33 @@ def load_forty_labels(
         replace=False
     )
 
-    # 4. Flatten images and scale pixel values to [0, 1].
+    # Step 4: Flatten images and normalize pixel values.
     X_lab = (
-        x_train[labeled].reshape(len(labeled), 784).astype(np.float32)
-        / 255.0
+        x_train[labeled]
+        .reshape(len(labeled), 784)
+        .astype(np.float32) / 255.0
     )
 
     X_unlab = (
-        x_train[unlabeled].reshape(len(unlabeled), 784).astype(np.float32)
-        / 255.0
+        x_train[unlabeled]
+        .reshape(len(unlabeled), 784)
+        .astype(np.float32) / 255.0
     )
 
     X_test = (
-        x_test[test_indices].reshape(len(test_indices), 784).astype(np.float32)
-        / 255.0
+        x_test[test_indices]
+        .reshape(len(test_indices), 784)
+        .astype(np.float32) / 255.0
     )
 
+    # Step 5: Return the required dictionary.
     return {
         "X_lab": X_lab,
         "y_lab": y_train[labeled].astype(np.int64),
+
         "X_unlab": X_unlab,
         "y_unlab": y_train[unlabeled].astype(np.int64),
+
         "X_test": X_test,
         "y_test": y_test[test_indices].astype(np.int64),
     }
