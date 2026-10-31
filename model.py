@@ -18,8 +18,6 @@ from urllib.request import urlretrieve
 # Module-level MNIST cache
 _MNIST = {}
 
-# Use the current working directory instead of __file__.
-# This works in notebooks and online code editors too.
 _MNIST_DIR = Path.cwd() / "data" / "mnist"
 
 _MNIST_FILES = {
