@@ -35,6 +35,7 @@ python scaffold.py
 - [x] **23.** Ensemble
 - [x] **24.** fit_ensemble
 - [x] **25.** acquisition_scores
+- [x] **26.** active_learning_curve
 
 ---
 

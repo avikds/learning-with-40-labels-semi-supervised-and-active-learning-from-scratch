@@ -2530,3 +2530,246 @@ def acquisition_scores(P, method):
     # Return one float64 acquisition score per pool sample.
     return np.asarray(scores, dtype=np.float64)
 
+# Step 26 - active_learning_curve
+def active_learning_curve(data, strategy, rounds=5, k=20,
+                          pool_size=2000, M=5,
+                          sizes=(784, 128, 10), steps=150,
+                          augment=None, seed=0):
+
+    # ---------------------------------------------------------
+    # 1. Validate the active-learning configuration.
+    # ---------------------------------------------------------
+
+    if strategy not in (
+        "random",
+        "entropy",
+        "least_confident",
+        "bald"
+    ):
+        raise ValueError("Invalid acquisition strategy.")
+
+    if rounds < 0:
+        raise ValueError("rounds must be non-negative.")
+
+    if k <= 0:
+        raise ValueError("k must be positive.")
+
+    if pool_size <= 0:
+        raise ValueError("pool_size must be positive.")
+
+    if rounds * k > pool_size:
+        raise ValueError("The pool does not contain enough samples for all rounds.")
+
+    if M <= 0 or steps <= 0:
+        raise ValueError("M and steps must be positive.")
+
+    # ---------------------------------------------------------
+    # 2. Extract the initial labeled, unlabeled and test data.
+    # ---------------------------------------------------------
+
+    X_lab = np.asarray(data["X_lab"], dtype=np.float32).copy()
+    y_lab = np.asarray(data["y_lab"], dtype=np.int64).copy()
+
+    X_unlab = np.asarray(data["X_unlab"], dtype=np.float32)
+    y_unlab = np.asarray(data["y_unlab"], dtype=np.int64)
+
+    X_test = np.asarray(data["X_test"], dtype=np.float32)
+    y_test = np.asarray(data["y_test"], dtype=np.int64)
+
+    # Validate the dataset dimensions.
+    if X_lab.ndim != 2 or X_unlab.ndim != 2:
+        raise ValueError("Training and unlabeled data must be 2D arrays.")
+
+    if len(X_lab) != len(y_lab):
+        raise ValueError("X_lab and y_lab must have equal lengths.")
+
+    if len(X_unlab) != len(y_unlab):
+        raise ValueError("X_unlab and y_unlab must have equal lengths.")
+
+    if len(X_test) != len(y_test):
+        raise ValueError("X_test and y_test must have equal lengths.")
+
+    if pool_size > len(X_unlab):
+        raise ValueError("pool_size exceeds the available unlabeled data.")
+
+    # Use only the first pool_size unlabeled samples.
+    pool = X_unlab[:pool_size]
+    pool_labels = y_unlab[:pool_size]
+
+    # ---------------------------------------------------------
+    # 3. Initialize random selection and query tracking.
+    # ---------------------------------------------------------
+
+    # Separate random generator for acquisition sampling.
+    rng = np.random.default_rng(seed + 100)
+
+    # Track which pool samples have already been labeled.
+    # False means the sample is still available for querying.
+    queried = np.zeros(pool_size, dtype=bool)
+
+    # Store (number of labeled samples, test accuracy).
+    curve = []
+
+    # ---------------------------------------------------------
+    # 4. Perform active-learning rounds.
+    # ---------------------------------------------------------
+
+    for r in range(rounds + 1):
+
+        # -----------------------------------------------------
+        # A. Create a fresh ensemble.
+        # -----------------------------------------------------
+
+        ens = Ensemble(
+            list(sizes),
+            M=M,
+            seed=seed + r
+        )
+
+        # -----------------------------------------------------
+        # B. Train the ensemble on the current labeled dataset.
+        # -----------------------------------------------------
+
+        fit_ensemble(
+            ens,
+            X_lab,
+            y_lab,
+            steps=steps,
+            augment=augment,
+            seed=seed + r
+        )
+
+        # -----------------------------------------------------
+        # C. Evaluate the current ensemble on the test set.
+        # -----------------------------------------------------
+
+        # Obtain probabilities from all ensemble members.
+        test_probs = ensemble_probs(
+            ens,
+            X_test
+        )
+
+        # Average predictions across ensemble members.
+        mean_probs = test_probs.mean(axis=0)
+
+        # Calculate the ensemble's predicted classes.
+        predictions = np.argmax(
+            mean_probs,
+            axis=1
+        )
+
+        # Calculate test accuracy.
+        test_acc = float(
+            np.mean(predictions == y_test)
+        )
+
+        # Record the current learning-curve point.
+        curve.append(
+            (
+                int(len(X_lab)),
+                test_acc
+            )
+        )
+
+        # -----------------------------------------------------
+        # D. Stop after the final evaluation round.
+        # -----------------------------------------------------
+
+        if r == rounds:
+            break
+
+        # -----------------------------------------------------
+        # E. Find all currently available pool samples.
+        # -----------------------------------------------------
+
+        # flatnonzero returns indices in increasing order.
+        available = np.flatnonzero(~queried)
+
+        if len(available) < k:
+            raise ValueError("Not enough unlabeled samples remain.")
+
+        # -----------------------------------------------------
+        # F. Select new samples using the chosen strategy.
+        # -----------------------------------------------------
+
+        if strategy == "random":
+
+            # Randomly select k distinct available samples.
+            selected_idx = rng.choice(
+                available,
+                size=k,
+                replace=False
+            )
+
+        else:
+
+            # Obtain ensemble probabilities for available samples.
+            pool_probs = ensemble_probs(
+                ens,
+                pool[available]
+            )
+
+            # Calculate acquisition scores.
+            scores = acquisition_scores(
+                pool_probs,
+                strategy
+            )
+
+            # Sort by descending acquisition score.
+            # Stable sorting ensures ties favor lower pool indices
+            # because available is already sorted in increasing order.
+            order = np.argsort(
+                -scores,
+                kind="stable"
+            )
+
+            # Select the k highest-scoring samples.
+            selected_idx = available[order[:k]]
+
+        # -----------------------------------------------------
+        # G. Mark selected samples as queried.
+        # -----------------------------------------------------
+
+        queried[selected_idx] = True
+
+        # -----------------------------------------------------
+        # H. Obtain oracle labels and expand the labeled dataset.
+        # -----------------------------------------------------
+
+        # Add the selected pool images to the training data.
+        X_lab = np.concatenate(
+            [
+                X_lab,
+                pool[selected_idx]
+            ],
+            axis=0
+        )
+
+        # Add their corresponding true labels.
+        # Oracle labels are used only after acquisition.
+        y_lab = np.concatenate(
+            [
+                y_lab,
+                pool_labels[selected_idx]
+            ],
+            axis=0
+        )
+
+    # Return the complete active-learning curve.
+    return curve
+
+
+def aulc(curve):
+    # Validate that the learning curve is not empty.
+    if len(curve) == 0:
+        raise ValueError("curve must contain at least one point.")
+
+    # Extract the test accuracies from the learning curve.
+    accuracies = np.asarray(
+        [acc for _, acc in curve],
+        dtype=np.float64
+    )
+
+    # Return the mean accuracy across all learning-curve points.
+    return float(np.mean(accuracies))
+
