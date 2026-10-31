@@ -1423,3 +1423,81 @@ def self_training_rounds(
     # Return the complete training history and the final model.
     return history, model
 
+# Step 14 - unlabeled_losses
+def unlabeled_losses(logits, T=0.5):
+    # Validate the temperature.
+    if T <= 0:
+        raise ValueError("T must be positive.")
+
+    # Ensure the input contains batch-wise class logits.
+    if len(logits.shape) != 2:
+        raise ValueError("logits must have shape (batch_size, n_classes).")
+
+    n_classes = logits.shape[-1]
+
+    if n_classes == 0:
+        raise ValueError("logits must contain at least one class.")
+
+    # Calculate class probabilities and log probabilities.
+    p = logits.softmax(-1)
+    log_p = logits.log_softmax(-1)
+
+    # ---------------------------------------------------------
+    # 1. Self-training loss (Equation 19.16).
+    # ---------------------------------------------------------
+
+    # Obtain the predicted class for each sample.
+    # Detach the pseudo-label so gradients do not flow through it.
+    hard_targets = (
+        logits.argmax(axis=-1)
+        .detach()
+        .one_hot(n_classes)
+        .cast(logits.dtype)
+    )
+
+    # Cross-entropy against the detached hard pseudo-label.
+    self_training = -(
+        hard_targets * log_p
+    ).sum(axis=-1).mean()
+
+    # ---------------------------------------------------------
+    # 2. Entropy minimization loss (Equation 19.17).
+    # ---------------------------------------------------------
+
+    # Minimize the entropy of the predicted class distribution.
+    # Gradients flow through both p and log_p.
+    entropy = -(
+        p * log_p
+    ).sum(axis=-1).mean()
+
+    # ---------------------------------------------------------
+    # 3. Sharpened self-training loss.
+    # ---------------------------------------------------------
+
+    # Construct temperature-sharpened probability targets.
+    # Detaching prevents gradients from flowing through the targets.
+    q = (
+        log_p / T
+    ).softmax(-1).detach()
+
+    # Cross-entropy against the detached sharpened targets.
+    sharpened = -(
+        q * log_p
+    ).sum(axis=-1).mean()
+
+    # Return all three scalar loss tensors.
+    return {
+        "self_training": self_training,
+        "entropy": entropy,
+        "sharpened": sharpened
+    }
+
+
+def entropy_loss(model, xu, xu_aug, noise):
+    # Generate logits for the unlabeled minibatch.
+    logits = model(xu)
+
+    # Return the entropy-minimization objective.
+    # xu_aug and noise are intentionally unused.
+    return unlabeled_losses(logits)["entropy"]
+

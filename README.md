@@ -23,6 +23,7 @@ python scaffold.py
 - [x] **11.** train_soft
 - [x] **12.** select_pseudo_labels
 - [x] **13.** self_training_rounds
+- [x] **14.** unlabeled_losses
 
 ---
 
