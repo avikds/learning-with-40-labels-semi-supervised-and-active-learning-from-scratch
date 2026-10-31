@@ -28,6 +28,7 @@ python scaffold.py
 - [x] **16.** consistency_loss
 - [x] **17.** vat_direction
 - [x] **18.** make_vat_loss
+- [x] **19.** nt_xent_loss
 
 ---
 

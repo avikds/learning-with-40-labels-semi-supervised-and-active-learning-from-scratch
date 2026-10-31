@@ -1762,3 +1762,86 @@ def make_vat_loss(eps=2.0, xi=1e-3, mi_weight=0.0):
 
     return vat_loss
 
+# Step 19 - nt_xent_loss
+def nt_xent_loss(z1, z2, tau=0.5):
+    # Validate the inputs.
+    if len(z1.shape) != 2 or len(z2.shape) != 2:
+        raise ValueError("z1 and z2 must be 2D embedding tensors.")
+
+    if z1.shape != z2.shape:
+        raise ValueError("z1 and z2 must have identical shapes.")
+
+    if z1.shape[0] == 0 or z1.shape[1] == 0:
+        raise ValueError("Embedding tensors must not be empty.")
+
+    if tau <= 0:
+        raise ValueError("tau must be positive.")
+
+    n = z1.shape[0]
+
+    # ---------------------------------------------------------
+    # 1. Concatenate the two augmented-view embeddings.
+    # ---------------------------------------------------------
+
+    # The first n rows correspond to z1.
+    # The next n rows correspond to z2.
+    z = Tensor.cat(z1, z2, dim=0)
+
+    # ---------------------------------------------------------
+    # 2. L2-normalize every embedding.
+    # ---------------------------------------------------------
+
+    # Calculate the L2 norm of each embedding.
+    norms = (
+        (z * z).sum(axis=1, keepdim=True).sqrt()
+        + 1e-8
+    )
+
+    # Normalize each embedding.
+    z = z / norms
+
+    # ---------------------------------------------------------
+    # 3. Calculate pairwise cosine similarities.
+    # ---------------------------------------------------------
+
+    # Since embeddings are normalized, the dot product
+    # gives cosine similarity.
+    similarity = (z @ z.T) / tau
+
+    # Remove self-similarity by subtracting a large value
+    # from the diagonal.
+    diagonal_mask = Tensor(
+        np.eye(2 * n, dtype=np.float32)
+    )
+
+    similarity = similarity - 1e9 * diagonal_mask
+
+    # ---------------------------------------------------------
+    # 4. Construct positive-pair targets.
+    # ---------------------------------------------------------
+
+    # For the first view, its positive pair is in the second view.
+    # For the second view, its positive pair is in the first view.
+    positive_indices = np.concatenate([
+        np.arange(n, 2 * n),
+        np.arange(0, n)
+    ])
+
+    # Construct one-hot targets for the positive pairs.
+    targets = Tensor(
+        np.eye(2 * n, dtype=np.float32)[positive_indices]
+    )
+
+    # ---------------------------------------------------------
+    # 5. Calculate the NT-Xent cross-entropy loss.
+    # ---------------------------------------------------------
+
+    # Compute log-softmax across all non-self similarities.
+    log_probs = similarity.log_softmax(-1)
+
+    # Calculate cross-entropy against the positive-pair targets.
+    # Sum over candidate embeddings and average over all 2n rows.
+    loss = -(targets * log_probs).sum(axis=-1).mean()
+
+    return loss
+
