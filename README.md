@@ -22,6 +22,7 @@ python scaffold.py
 - [x] **10.** harmonic_solution
 - [x] **11.** train_soft
 - [x] **12.** select_pseudo_labels
+- [x] **13.** self_training_rounds
 
 ---
 

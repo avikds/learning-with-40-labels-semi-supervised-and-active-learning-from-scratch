@@ -1290,3 +1290,136 @@ def select_pseudo_labels(probs, threshold, y_true=None):
         "accuracy": pseudo_accuracy
     }
 
+# Step 13 - self_training_rounds
+def self_training_rounds(
+    data,
+    make_model,
+    rounds=2,
+    threshold=0.95,
+    init_steps=300,
+    steps=400,
+    augment=None,
+    seed=0
+):
+    # Extract the labeled, unlabeled, and test datasets.
+    X_lab = np.asarray(data["X_lab"], dtype=np.float32)
+    y_lab = np.asarray(data["y_lab"], dtype=np.int64)
+
+    X_unlab = np.asarray(data["X_unlab"], dtype=np.float32)
+
+    y_unlab = np.asarray(data["y_unlab"], dtype=np.int64)
+
+    X_test = np.asarray(data["X_test"], dtype=np.float32)
+    y_test = np.asarray(data["y_test"], dtype=np.int64)
+
+    # Validate the training configuration.
+    if rounds < 0:
+        raise ValueError("rounds must be non-negative.")
+
+    if init_steps <= 0 or steps <= 0:
+        raise ValueError("Training steps must be positive.")
+
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be between 0 and 1.")
+
+    if len(X_lab) != len(y_lab):
+        raise ValueError("X_lab and y_lab must have equal lengths.")
+
+    if len(X_unlab) != len(y_unlab):
+        raise ValueError("X_unlab and y_unlab must have equal lengths.")
+
+    # Store the diagnostics for every training round.
+    history = []
+
+    # ---------------------------------------------------------
+    # 1. Round 0: Supervised training using genuine labels only.
+    # ---------------------------------------------------------
+
+    # Create a fresh, untrained model.
+    model = make_model()
+
+    # Train using only the original labeled dataset.
+    train_ssl(
+        model,
+        X_lab,
+        y_lab,
+        steps=init_steps,
+        augment=augment,
+        seed=seed
+    )
+
+    # Record the initial model's performance.
+    history.append({
+        "round": 0,
+        "n_selected": 0,
+        "pseudo_acc": None,
+        "test_acc": accuracy(model, X_test, y_test)
+    })
+
+    # ---------------------------------------------------------
+    # 2. Perform offline self-training rounds.
+    # ---------------------------------------------------------
+
+    for r in range(1, rounds + 1):
+
+        # Generate class probabilities for the entire unlabeled pool.
+        probs = predict_proba(model, X_unlab)
+
+        # Select high-confidence pseudo-labels.
+        # y_unlab is used ONLY to calculate diagnostic accuracy.
+        selected = select_pseudo_labels(
+            probs,
+            threshold,
+            y_true=y_unlab
+        )
+
+        # Obtain the selected pool indices and pseudo-labels.
+        idx = selected["idx"]
+        pseudo_labels = selected["labels"]
+
+        # -----------------------------------------------------
+        # 3. Construct the expanded training dataset.
+        # -----------------------------------------------------
+
+        # Combine genuine labeled images with selected unlabeled images.
+        X_combined = np.concatenate(
+            [X_lab, X_unlab[idx]],
+            axis=0
+        )
+
+        # Combine genuine labels with predicted pseudo-labels.
+        y_combined = np.concatenate(
+            [y_lab, pseudo_labels],
+            axis=0
+        )
+
+        # -----------------------------------------------------
+        # 4. Train a completely fresh model from scratch.
+        # -----------------------------------------------------
+
+        model = make_model()
+
+        train_ssl(
+            model,
+            X_combined,
+            y_combined,
+            steps=steps,
+            batch=128,
+            augment=augment,
+            seed=seed
+        )
+
+        # -----------------------------------------------------
+        # 5. Record diagnostics for the current round.
+        # -----------------------------------------------------
+
+        history.append({
+            "round": r,
+            "n_selected": selected["n_selected"],
+            "pseudo_acc": selected["accuracy"],
+            "test_acc": accuracy(model, X_test, y_test)
+        })
+
+    # Return the complete training history and the final model.
+    return history, model
+
