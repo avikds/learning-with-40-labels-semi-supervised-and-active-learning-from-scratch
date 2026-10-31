@@ -33,6 +33,7 @@ python scaffold.py
 - [x] **21.** with_new_head
 - [x] **22.** distill
 - [x] **23.** Ensemble
+- [x] **24.** fit_ensemble
 
 ---
 

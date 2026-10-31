@@ -2216,3 +2216,207 @@ class Ensemble:
         # Shape: (M, B, C)
         return x
 
+# Step 24 - fit_ensemble
+def fit_ensemble(ens, X, y, steps=150, batch=64, lr=2e-3,
+                 seed=0, augment=None):
+
+    # Validate the training configuration.
+    if steps <= 0:
+        raise ValueError("steps must be positive.")
+
+    if batch <= 0:
+        raise ValueError("batch must be positive.")
+
+    # Convert the training data into NumPy arrays.
+    X = np.asarray(X, dtype=np.float32)
+    y = np.asarray(y, dtype=np.int32)
+
+    if X.ndim != 2 or len(X) == 0:
+        raise ValueError("X must be a non-empty 2D array.")
+
+    if y.ndim != 1 or len(y) != len(X):
+        raise ValueError("y must have one label for each sample.")
+
+    if not np.all(np.isfinite(X)):
+        raise ValueError("X must contain only finite values.")
+
+    # Store ensemble dimensions.
+    M = ens.M
+    n_classes = ens.sizes[-1]
+
+    if np.any(y < 0) or np.any(y >= n_classes):
+        raise ValueError("y contains invalid class labels.")
+
+    # Initialize a reproducible random number generator.
+    rng = np.random.default_rng(seed)
+
+    # Initialize Adam using all ensemble parameters.
+    params = ens.parameters()
+
+    opt = Adam(
+        params,
+        lr=lr
+    )
+
+    # ---------------------------------------------------------
+    # 1. Define the TinyJit ensemble training step.
+    # ---------------------------------------------------------
+
+    @TinyJit
+    def train_step(x, y_onehot):
+
+        # Forward propagation through all ensemble members.
+        # x shape: (M, batch, D)
+        # Output shape: (M, batch, C)
+        logits = ens(x)
+
+        # Calculate cross-entropy for every member.
+        # First average over the minibatch, then sum over members.
+        loss = -(
+            y_onehot * logits.log_softmax(-1)
+        ).sum(axis=-1).mean(axis=-1).sum()
+
+        # Calculate gradients for all ensemble parameters.
+        grads = loss.gradient(*params)
+
+        # Update all ensemble members using Adam.
+        updated = opt.step(grads)
+
+        # Realize the loss and optimizer tensors together.
+        Tensor.realize(
+            loss,
+            *updated
+        )
+
+        return loss
+
+    # ---------------------------------------------------------
+    # 2. Ensemble training loop.
+    # ---------------------------------------------------------
+
+    last_loss = 0.0
+
+    for _ in range(steps):
+
+        # Draw independent minibatch indices for each member.
+        # Shape: (M, batch)
+        i = rng.integers(
+            0,
+            len(X),
+            size=(M, batch)
+        )
+
+        # Gather the selected images.
+        # Flatten indices temporarily for augmentation.
+        x_batch = X[i.ravel()]
+
+        # Apply augmentation when provided.
+        if augment is not None:
+            x_batch = augment(
+                x_batch,
+                rng
+            )
+
+        x_batch = np.asarray(
+            x_batch,
+            dtype=np.float32
+        )
+
+        # Reshape images into member-specific minibatches.
+        x_batch = x_batch.reshape(
+            M,
+            batch,
+            X.shape[1]
+        )
+
+        # Gather the corresponding labels.
+        # Shape: (M, batch)
+        y_batch = y[i]
+
+        # One-hot encode labels.
+        # Shape: (M, batch, n_classes)
+        y_onehot = np.eye(
+            n_classes,
+            dtype=np.float32
+        )[y_batch]
+
+        # Convert minibatches into tinygrad tensors.
+        x_t = Tensor(x_batch)
+        y_t = Tensor(y_onehot)
+
+        # Execute the TinyJit training step.
+        loss = train_step(
+            x_t,
+            y_t
+        )
+
+        # Store the most recent training loss.
+        last_loss = float(loss.item())
+
+    # Return the final ensemble training loss.
+    return last_loss
+
+
+def ensemble_probs(ens, X, batch=1000):
+
+    # Validate the batch size.
+    if batch <= 0:
+        raise ValueError("batch must be positive.")
+
+    # Convert input data into a float32 NumPy array.
+    X = np.asarray(X, dtype=np.float32)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    if X.shape[1] != ens.sizes[0]:
+        raise ValueError("X has an incorrect feature dimension.")
+
+    if not np.all(np.isfinite(X)):
+        raise ValueError("X must contain only finite values.")
+
+    # Store ensemble probabilities for each chunk.
+    probabilities = []
+
+    # ---------------------------------------------------------
+    # 1. Process input images in fixed-size chunks.
+    # ---------------------------------------------------------
+
+    for start in range(0, len(X), batch):
+
+        end = min(
+            start + batch,
+            len(X)
+        )
+
+        # Convert the current chunk into a tinygrad Tensor.
+        x_batch = Tensor(
+            X[start:end]
+        )
+
+        # Generate logits for all ensemble members.
+        # Shape: (M, chunk_size, C)
+        logits = ens(x_batch)
+
+        # Apply softmax along the class dimension.
+        # Shape: (M, chunk_size, C)
+        probs = logits.softmax(-1).numpy()
+
+        # Store the current chunk's predictions.
+        probabilities.append(probs)
+
+    # ---------------------------------------------------------
+    # 2. Concatenate predictions along the sample dimension.
+    # ---------------------------------------------------------
+
+    if not probabilities:
+        return np.empty(
+            (ens.M, 0, ens.sizes[-1]),
+            dtype=np.float32
+        )
+
+    return np.concatenate(
+        probabilities,
+        axis=1
+    )
+
