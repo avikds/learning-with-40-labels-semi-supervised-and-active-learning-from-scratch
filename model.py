@@ -1965,3 +1965,34 @@ def pretrain_simclr(encoder, X_unlab, steps=1000, batch=256,
     # Return the recorded contrastive training history.
     return history
 
+# Step 21 - with_new_head
+def with_new_head(encoder, n_out, seed=0):
+    # Create a new MLP with the same hidden architecture
+    # but with a freshly initialized classification head.
+    new_sizes = encoder.sizes[:-1] + [n_out]
+
+    classifier = MLP(new_sizes, seed=seed)
+
+    # Copy all pretrained layers except the final projection head.
+    for i in range(len(encoder.layers) - 1):
+
+        # Obtain the pretrained weights and biases.
+        W, b = encoder.layers[i]
+
+        # Copy the tensor values through NumPy arrays.
+        # This ensures the new model has independent parameters.
+        W_copy = Tensor(
+            W.numpy().copy()
+        ).contiguous().realize()
+
+        b_copy = Tensor(
+            b.numpy().copy()
+        ).contiguous().realize()
+
+        # Replace the corresponding hidden layer in the classifier.
+        classifier.layers[i] = (W_copy, b_copy)
+
+    # Return the model with pretrained hidden layers
+    # and a freshly initialized classification head.
+    return classifier
+

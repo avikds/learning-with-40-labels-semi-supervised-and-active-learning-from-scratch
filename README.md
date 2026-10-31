@@ -30,6 +30,7 @@ python scaffold.py
 - [x] **18.** make_vat_loss
 - [x] **19.** nt_xent_loss
 - [x] **20.** pretrain_simclr
+- [x] **21.** with_new_head
 
 ---
 
