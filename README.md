@@ -18,6 +18,7 @@ python scaffold.py
 - [x] **6.** train_ssl
 - [x] **7.** pca_fit
 - [x] **8.** knn_graph
+- [x] **9.** label_propagation
 
 ---
 

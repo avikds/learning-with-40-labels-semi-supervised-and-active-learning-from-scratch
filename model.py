@@ -823,3 +823,122 @@ def knn_graph(Z, k=10, sigma=None):
     # Return a float64 CSR sparse matrix.
     return W.astype(np.float64)
 
+# Step 9 - label_propagation
+def label_propagation(W, labeled_idx, y_labeled, n_classes,
+                      n_iter=200, renormalize=True):
+
+    # Convert the graph into a float64 CSR sparse matrix.
+    W = sp.csr_matrix(W, dtype=np.float64)
+
+    # Validate the graph dimensions.
+    if W.ndim != 2 or W.shape[0] != W.shape[1]:
+        raise ValueError("W must be a square adjacency matrix.")
+
+    n = W.shape[0]
+
+    # Validate the number of classes and iterations.
+    if not isinstance(n_classes, (int, np.integer)) or n_classes <= 0:
+        raise ValueError("n_classes must be a positive integer.")
+
+    if not isinstance(n_iter, (int, np.integer)) or n_iter < 0:
+        raise ValueError("n_iter must be a non-negative integer.")
+
+    # Convert labeled indices and labels into NumPy arrays.
+    labeled_idx = np.asarray(labeled_idx, dtype=np.int64).reshape(-1)
+    y_labeled = np.asarray(y_labeled, dtype=np.int64).reshape(-1)
+
+    if len(labeled_idx) != len(y_labeled):
+        raise ValueError("labeled_idx and y_labeled must have equal lengths.")
+
+    if np.any(labeled_idx < 0) or np.any(labeled_idx >= n):
+        raise ValueError("labeled_idx contains invalid node indices.")
+
+    if np.any(y_labeled < 0) or np.any(y_labeled >= n_classes):
+        raise ValueError("y_labeled contains invalid class indices.")
+
+    # ---------------------------------------------------------
+    # 1. Construct the column-normalized transition matrix.
+    # ---------------------------------------------------------
+
+    # Calculate the sum of each column.
+    col_sum = np.asarray(W.sum(axis=0)).ravel()
+
+    # Calculate the reciprocal of each column sum.
+    # Isolated columns receive an inverse of zero.
+    inv_col_sum = np.zeros_like(col_sum, dtype=np.float64)
+
+    np.divide(
+        1.0,
+        col_sum,
+        out=inv_col_sum,
+        where=col_sum != 0
+    )
+
+    # Construct the transition matrix:
+    # T[i, j] = W[i, j] / sum_k W[k, j]
+    T = W @ sp.diags(
+        inv_col_sum,
+        format="csr"
+    )
+
+    T = T.tocsr()
+
+    # ---------------------------------------------------------
+    # 2. Initialize the label distribution matrix.
+    # ---------------------------------------------------------
+
+    # Each row represents a node and each column a class.
+    # Labeled nodes receive one-hot distributions.
+    # Unlabeled nodes initially receive all-zero distributions.
+    Y0 = np.zeros(
+        (n, n_classes),
+        dtype=np.float64
+    )
+
+    # Assign the known labels to their corresponding nodes.
+    Y0[labeled_idx, y_labeled] = 1.0
+
+    # Keep a working copy of the initial label distributions.
+    Y = Y0.copy()
+
+    # ---------------------------------------------------------
+    # 3. Iteratively propagate labels through the graph.
+    # ---------------------------------------------------------
+
+    for _ in range(n_iter):
+
+        # Propagate class distributions using the transition matrix.
+        Y = T @ Y
+
+        # -----------------------------------------------------
+        # 4. Renormalize each row, if requested.
+        # -----------------------------------------------------
+
+        if renormalize:
+
+            # Calculate the sum of each row.
+            row_sum = Y.sum(axis=1, keepdims=True)
+
+            # Normalize nonzero rows so their class probabilities
+            # sum to one. All-zero rows remain unchanged.
+            Y_normalized = np.zeros_like(Y)
+
+            np.divide(
+                Y,
+                row_sum,
+                out=Y_normalized,
+                where=row_sum != 0
+            )
+
+            Y = Y_normalized
+
+        # -----------------------------------------------------
+        # 5. Clamp labeled nodes to their original labels.
+        # -----------------------------------------------------
+
+        # Prevent propagation from changing known labels.
+        Y[labeled_idx] = Y0[labeled_idx]
+
+    # Return the propagated class distributions.
+    return Y.astype(np.float64)
+
