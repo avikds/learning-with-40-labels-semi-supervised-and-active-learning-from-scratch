@@ -1501,3 +1501,42 @@ def entropy_loss(model, xu, xu_aug, noise):
     # xu_aug and noise are intentionally unused.
     return unlabeled_losses(logits)["entropy"]
 
+# Step 15 - mutual_information_loss
+def mutual_information_loss(model, xu, xu_aug, noise):
+    # Generate logits and calculate class probabilities.
+    p = model(xu).softmax(-1)
+
+    # Add a small epsilon for numerical stability.
+    log_p = (p + 1e-8).log()
+
+    # ---------------------------------------------------------
+    # 1. Conditional entropy H(y|x).
+    # ---------------------------------------------------------
+
+    # Calculate the entropy of each individual prediction.
+    # Then average across the unlabeled minibatch.
+    H_cond = -(p * log_p).sum(axis=-1).mean()
+
+    # ---------------------------------------------------------
+    # 2. Marginal class probabilities.
+    # ---------------------------------------------------------
+
+    # Calculate the average predicted probability of each class.
+    p_bar = p.mean(axis=0)
+
+    # Calculate the logarithm of the marginal probabilities.
+    log_p_bar = (p_bar + 1e-8).log()
+
+    # ---------------------------------------------------------
+    # 3. Marginal entropy H(y).
+    # ---------------------------------------------------------
+
+    H_marg = -(p_bar * log_p_bar).sum()
+
+    # ---------------------------------------------------------
+    # 4. Negative mutual information objective.
+    # ---------------------------------------------------------
+
+    # Minimizing H_cond - H_marg maximizes mutual information.
+    return H_cond - H_marg
+
