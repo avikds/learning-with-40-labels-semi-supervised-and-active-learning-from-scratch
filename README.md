@@ -29,6 +29,7 @@ python scaffold.py
 - [x] **17.** vat_direction
 - [x] **18.** make_vat_loss
 - [x] **19.** nt_xent_loss
+- [x] **20.** pretrain_simclr
 
 ---
 

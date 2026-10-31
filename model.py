@@ -1845,3 +1845,123 @@ def nt_xent_loss(z1, z2, tau=0.5):
 
     return loss
 
+# Step 20 - pretrain_simclr
+def pretrain_simclr(encoder, X_unlab, steps=1000, batch=256,
+                    lr=1e-3, tau=0.1, augment=None, seed=0):
+
+    # Validate the training configuration.
+    if steps <= 0:
+        raise ValueError("steps must be positive.")
+
+    if batch <= 0:
+        raise ValueError("batch must be positive.")
+
+    if tau <= 0:
+        raise ValueError("tau must be positive.")
+
+    # Convert the unlabeled pool to float32.
+    X_unlab = np.asarray(X_unlab, dtype=np.float32)
+
+    if X_unlab.ndim != 2 or len(X_unlab) == 0:
+        raise ValueError("X_unlab must be a non-empty 2D array.")
+
+    # Initialize a reproducible random number generator.
+    rng = np.random.default_rng(seed)
+
+    # Initialize the custom Adam optimizer.
+    params = encoder.parameters()
+    opt = Adam(params, lr=lr)
+
+    # ---------------------------------------------------------
+    # 1. Define the TinyJit contrastive training step.
+    # ---------------------------------------------------------
+
+    @TinyJit
+    def train_step(x1, x2):
+
+        # Obtain the projected embeddings of both augmented views.
+        z1 = encoder(x1)
+        z2 = encoder(x2)
+
+        # Calculate the SimCLR contrastive loss.
+        loss = nt_xent_loss(z1, z2, tau=tau)
+
+        # Calculate gradients with respect to encoder parameters.
+        grads = loss.gradient(*params)
+
+        # Update encoder parameters using Adam.
+        updated = opt.step(grads)
+
+        # Realize the loss and optimizer tensors together.
+        Tensor.realize(loss, *updated)
+
+        return loss
+
+    # ---------------------------------------------------------
+    # 2. Contrastive pretraining loop.
+    # ---------------------------------------------------------
+
+    history = []
+
+    for t in range(steps):
+
+        # Randomly sample a minibatch from the unlabeled pool.
+        # Sampling is performed with replacement.
+        j = rng.integers(
+            0,
+            len(X_unlab),
+            size=batch
+        )
+
+        # Extract the original images.
+        x_base = X_unlab[j]
+
+        # -----------------------------------------------------
+        # 3. Generate two independently augmented views.
+        # -----------------------------------------------------
+
+        if augment is not None:
+
+            # First augmented view.
+            x1 = augment(x_base, rng)
+
+            # Second independently augmented view.
+            x2 = augment(x_base, rng)
+
+        else:
+            # Identity augmentation when no augmentation is given.
+            x1 = x_base
+            x2 = x_base
+
+        # Ensure both views are float32 NumPy arrays.
+        x1 = np.asarray(x1, dtype=np.float32)
+        x2 = np.asarray(x2, dtype=np.float32)
+
+        # -----------------------------------------------------
+        # 4. Convert augmented views into tinygrad tensors.
+        # -----------------------------------------------------
+
+        x1_t = Tensor(x1)
+        x2_t = Tensor(x2)
+
+        # -----------------------------------------------------
+        # 5. Execute the TinyJit training step.
+        # -----------------------------------------------------
+
+        loss = train_step(x1_t, x2_t)
+
+        # -----------------------------------------------------
+        # 6. Record training history.
+        # -----------------------------------------------------
+
+        if t % 100 == 0 or t == steps - 1:
+            history.append(
+                (
+                    int(t),
+                    float(loss.item())
+                )
+            )
+
+    # Return the recorded contrastive training history.
+    return history
+
