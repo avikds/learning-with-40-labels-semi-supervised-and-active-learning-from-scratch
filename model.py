@@ -1676,3 +1676,89 @@ def vat_direction(model, x, d, xi=1e-6):
 
     return direction
 
+# Step 18 - make_vat_loss
+def make_vat_loss(eps=2.0, xi=1e-3, mi_weight=0.0):
+
+    # Validate the VAT hyperparameters.
+    if eps < 0:
+        raise ValueError("eps must be non-negative.")
+
+    if xi <= 0:
+        raise ValueError("xi must be positive.")
+
+    if mi_weight < 0:
+        raise ValueError("mi_weight must be non-negative.")
+
+    # Return a trainer-compatible unlabeled loss function.
+    def vat_loss(model, xu, xu_aug, noise):
+
+        # -----------------------------------------------------
+        # 1. Obtain the clean reference predictions.
+        # -----------------------------------------------------
+
+        # Calculate class probabilities for the clean inputs.
+        # Detach them so they remain fixed during VAT optimization.
+        p = model(xu).softmax(-1).detach()
+
+        # -----------------------------------------------------
+        # 2. Calculate the virtual adversarial direction.
+        # -----------------------------------------------------
+
+        # Use the trainer-provided standard-normal noise
+        # as the initial random perturbation direction.
+        g = vat_direction(
+            model,
+            xu,
+            noise,
+            xi=xi
+        )
+
+        # -----------------------------------------------------
+        # 3. Normalize the adversarial direction.
+        # -----------------------------------------------------
+
+        # Calculate the L2 norm independently for every sample.
+        g_norm = (
+            (g * g).sum(axis=1, keepdim=True).sqrt()
+            + 1e-12
+        )
+
+        # Normalize the VAT direction.
+        delta = g / g_norm
+
+        # Scale the normalized perturbation by eps.
+        # The resulting perturbation has approximately L2 norm eps.
+        x_adv = xu + eps * delta
+
+        # -----------------------------------------------------
+        # 4. Calculate the VAT consistency loss.
+        # -----------------------------------------------------
+
+        # Minimize KL divergence between clean and adversarial
+        # predictions.
+        vat = consistency_loss(
+            p,
+            model(x_adv),
+            kind="kl"
+        )
+
+        # -----------------------------------------------------
+        # 5. Optionally add mutual-information regularization.
+        # -----------------------------------------------------
+
+        if mi_weight > 0.0:
+
+            mi_loss = mutual_information_loss(
+                model,
+                xu,
+                xu_aug,
+                noise
+            )
+
+            vat = vat + mi_weight * mi_loss
+
+        # Return the combined scalar unlabeled loss.
+        return vat
+
+    return vat_loss
+

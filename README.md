@@ -27,6 +27,7 @@ python scaffold.py
 - [x] **15.** mutual_information_loss
 - [x] **16.** consistency_loss
 - [x] **17.** vat_direction
+- [x] **18.** make_vat_loss
 
 ---
 
