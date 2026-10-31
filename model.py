@@ -362,3 +362,254 @@ def augment_batch(X, rng, max_shift=2, flip_prob=0.0, noise_std=0.0, cutout=0):
     # Return flattened float32 images.
     return images.reshape(n, 784).astype(np.float32)
 
+# Step 6 - train_ssl
+from tinygrad import TinyJit, dtypes
+
+
+def ramp_weight(t, ramp_steps, lam):
+    # Calculate the ramped weight for the unlabeled loss.
+    if ramp_steps > 0:
+        progress = min(1.0, t / ramp_steps)
+
+        return float(
+            lam * math.exp(-5.0 * (1.0 - progress) ** 2)
+        )
+
+    # Use the full weight when ramping is disabled.
+    return float(lam)
+
+
+def train_ssl(model, X_lab, y_lab, X_unlab=None, unlabeled_loss=None, lam=1.0,
+              ramp_steps=0, steps=300, batch=64, ubatch=256, lr=1e-3,
+              augment=None, uaugment=None, weight_decay=0.0, seed=0):
+
+    # Validate the training configuration.
+    if steps < 0:
+        raise ValueError("steps must be non-negative.")
+
+    if batch <= 0:
+        raise ValueError("batch must be positive.")
+
+    if len(X_lab) == 0:
+        raise ValueError("X_lab must contain at least one sample.")
+
+    if len(X_lab) != len(y_lab):
+        raise ValueError("X_lab and y_lab must have the same length.")
+
+    if unlabeled_loss is not None:
+        if X_unlab is None or len(X_unlab) == 0:
+            raise ValueError(
+                "X_unlab must be provided when unlabeled_loss is used."
+            )
+
+        if ubatch <= 0:
+            raise ValueError("ubatch must be positive.")
+
+    # Ensure consistent input data types.
+    X_lab = np.asarray(X_lab, dtype=np.float32)
+    y_lab = np.asarray(y_lab, dtype=np.int32)
+
+    if X_lab.ndim != 2:
+        raise ValueError("X_lab must be a two-dimensional array.")
+
+    feature_dim = X_lab.shape[1]
+
+    if unlabeled_loss is not None:
+        X_unlab = np.asarray(X_unlab, dtype=np.float32)
+
+        if X_unlab.ndim != 2 or X_unlab.shape[1] != feature_dim:
+            raise ValueError("X_unlab must have the same feature dimension as X_lab.")
+
+    # ---------------------------------------------------------
+    # 1. Initialize the random generator and Adam optimizer.
+    # ---------------------------------------------------------
+
+    rng = np.random.default_rng(seed)
+
+    params = model.parameters()
+
+    opt = Adam(
+        params,
+        lr=lr,
+        weight_decay=weight_decay
+    )
+
+    # ---------------------------------------------------------
+    # 2. Create the TinyJit training step.
+    # ---------------------------------------------------------
+
+    @TinyJit
+    def train_step(xl, yl, xu, xu_aug, noise, ramp):
+
+        # Supervised cross-entropy loss.
+        sup_loss = model(xl).sparse_categorical_crossentropy(yl)
+
+        # Calculate the unlabeled loss when provided.
+        if unlabeled_loss is not None:
+
+            unsup_loss = unlabeled_loss(
+                model,
+                xu,
+                xu_aug,
+                noise
+            )
+
+        else:
+            # No unlabeled objective in supervised-only training.
+            unsup_loss = sup_loss * 0.0
+
+        # Combine supervised and ramp-weighted unlabeled losses.
+        # Sum ensures a scalar loss for gradient computation.
+        loss = (sup_loss + ramp * unsup_loss).sum()
+
+        # Compute gradients with respect to all model parameters.
+        grads = loss.gradient(*params)
+
+        # Update model parameters using the custom Adam optimizer.
+        opt_tensors = opt.step(grads)
+
+        # Realize both loss terms and all optimizer tensors together.
+        Tensor.realize(
+            sup_loss,
+            unsup_loss,
+            *opt_tensors
+        )
+
+        # Return the two loss components for recording history.
+        return sup_loss, unsup_loss
+
+    # ---------------------------------------------------------
+    # 3. Training loop.
+    # ---------------------------------------------------------
+
+    history = []
+
+    for t in range(steps):
+
+        # -----------------------------------------------------
+        # A. Draw a labeled minibatch.
+        # -----------------------------------------------------
+
+        i = rng.integers(
+            0,
+            len(X_lab),
+            size=batch
+        )
+
+        xl = X_lab[i]
+
+        # Apply labeled data augmentation when provided.
+        if augment is not None:
+            xl = augment(xl, rng)
+
+        # -----------------------------------------------------
+        # B. Draw unlabeled minibatches and create two views.
+        # -----------------------------------------------------
+
+        if unlabeled_loss is not None:
+
+            j = rng.integers(
+                0,
+                len(X_unlab),
+                size=ubatch
+            )
+
+            xu_base = X_unlab[j]
+
+            # First unlabeled view.
+            if augment is not None:
+                xu = augment(xu_base, rng)
+            else:
+                xu = xu_base
+
+            # Second unlabeled view.
+            if uaugment is not None:
+                xu_aug = uaugment(xu_base, rng)
+            else:
+                xu_aug = xu_base
+
+            # Generate standard Gaussian noise for the unlabeled loss.
+            noise = rng.normal(
+                loc=0.0,
+                scale=1.0,
+                size=xu.shape
+            ).astype(np.float32)
+
+        else:
+            # Supply three dummy zero arrays for supervised-only training.
+            # Their shapes are (1, D), as required by the specification.
+            xu = np.zeros((1, feature_dim), dtype=np.float32)
+            xu_aug = np.zeros((1, feature_dim), dtype=np.float32)
+            noise = np.zeros((1, feature_dim), dtype=np.float32)
+
+        # -----------------------------------------------------
+        # C. Construct the dynamic ramp-weight tensor.
+        # -----------------------------------------------------
+
+        ramp = Tensor(
+            np.asarray(
+                [ramp_weight(t, ramp_steps, lam)],
+                dtype=np.float32
+            ),
+            dtype=dtypes.float32
+        )
+
+        # -----------------------------------------------------
+        # D. Convert minibatches into tinygrad tensors.
+        # -----------------------------------------------------
+
+        xl_t = Tensor(
+            np.asarray(xl, dtype=np.float32),
+            dtype=dtypes.float32
+        )
+
+        yl_t = Tensor(
+            np.asarray(y_lab[i], dtype=np.int32),
+            dtype=dtypes.int32
+        )
+
+        xu_t = Tensor(
+            np.asarray(xu, dtype=np.float32),
+            dtype=dtypes.float32
+        )
+
+        xu_aug_t = Tensor(
+            np.asarray(xu_aug, dtype=np.float32),
+            dtype=dtypes.float32
+        )
+
+        noise_t = Tensor(
+            np.asarray(noise, dtype=np.float32),
+            dtype=dtypes.float32
+        )
+
+        # -----------------------------------------------------
+        # E. Execute the TinyJit training step.
+        # -----------------------------------------------------
+
+        sup_loss, unsup_loss = train_step(
+            xl_t,
+            yl_t,
+            xu_t,
+            xu_aug_t,
+            noise_t,
+            ramp
+        )
+
+        # -----------------------------------------------------
+        # F. Record training history.
+        # -----------------------------------------------------
+
+        if t % 50 == 0 or t == steps - 1:
+
+            history.append(
+                (
+                    int(t),
+                    float(sup_loss.item()),
+                    float(unsup_loss.item())
+                )
+            )
+
+    # Return the recorded training history.
+    return history
+
