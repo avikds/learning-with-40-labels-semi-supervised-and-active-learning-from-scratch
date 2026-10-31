@@ -2420,3 +2420,113 @@ def ensemble_probs(ens, X, batch=1000):
         axis=1
     )
 
+# Step 25 - acquisition_scores
+def acquisition_scores(P, method):
+    # Convert ensemble predictions to a float64 NumPy array.
+    P = np.asarray(P, dtype=np.float64)
+
+    # Validate the input dimensions.
+    if P.ndim != 3:
+        raise ValueError(
+            "P must have shape (S, N, C)."
+        )
+
+    S, N, C = P.shape
+
+    if S == 0 or N == 0 or C == 0:
+        raise ValueError(
+            "P must contain at least one sample, member and class."
+        )
+
+    if not np.all(np.isfinite(P)):
+        raise ValueError(
+            "P must contain only finite values."
+        )
+
+    if np.any(P < 0):
+        raise ValueError(
+            "Probabilities must be non-negative."
+        )
+
+    if not np.allclose(
+        P.sum(axis=-1),
+        1.0,
+        atol=1e-5
+    ):
+        raise ValueError(
+            "Each ensemble prediction must sum to one."
+        )
+
+    # ---------------------------------------------------------
+    # 1. Calculate the mean predictive distribution.
+    # ---------------------------------------------------------
+
+    # Average predictions across all ensemble members.
+    # Shape: (N, C)
+    p_bar = P.mean(axis=0)
+
+    # ---------------------------------------------------------
+    # 2. Calculate the entropy of a probability distribution.
+    # ---------------------------------------------------------
+
+    def entropy(q):
+        return -np.sum(
+            q * np.log(q + 1e-12),
+            axis=-1
+        )
+
+    # ---------------------------------------------------------
+    # 3. Maximum entropy acquisition.
+    # ---------------------------------------------------------
+
+    if method == "entropy":
+
+        # Calculate the entropy of the mean prediction.
+        # Higher entropy indicates greater predictive uncertainty.
+        scores = entropy(p_bar)
+
+    # ---------------------------------------------------------
+    # 4. BALD acquisition (Equation 19.51).
+    # ---------------------------------------------------------
+
+    elif method == "bald":
+
+        # Entropy of the mean predictive distribution.
+        H_mean = entropy(p_bar)
+
+        # Calculate the entropy of each ensemble member's prediction.
+        # Shape: (S, N)
+        member_entropies = entropy(P)
+
+        # Average the member-wise entropies.
+        # Shape: (N,)
+        H_members = member_entropies.mean(axis=0)
+
+        # BALD = entropy of the mean - mean entropy.
+        # This measures disagreement caused by model uncertainty.
+        scores = H_mean - H_members
+
+    # ---------------------------------------------------------
+    # 5. Least-confidence acquisition.
+    # ---------------------------------------------------------
+
+    elif method == "least_confident":
+
+        # Find the highest mean class probability for each sample.
+        max_prob = np.max(p_bar, axis=-1)
+
+        # Lower maximum confidence means higher acquisition priority.
+        scores = 1.0 - max_prob
+
+    # ---------------------------------------------------------
+    # 6. Reject unsupported acquisition strategies.
+    # ---------------------------------------------------------
+
+    else:
+        raise ValueError(
+            "method must be 'entropy', 'bald', or 'least_confident'."
+        )
+
+    # Return one float64 acquisition score per pool sample.
+    return np.asarray(scores, dtype=np.float64)
+

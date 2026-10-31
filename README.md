@@ -34,6 +34,7 @@ python scaffold.py
 - [x] **22.** distill
 - [x] **23.** Ensemble
 - [x] **24.** fit_ensemble
+- [x] **25.** acquisition_scores
 
 ---
 
