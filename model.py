@@ -148,3 +148,70 @@ class MLP:
         # Compute the output logits without applying softmax.
         return self.embed(x) @ W_last + b_last
 
+# Step 3 - Adam
+class Adam:
+    def __init__(self, params, lr=1e-3, b1=0.9, b2=0.999,
+                 eps=1e-8, weight_decay=0.0):
+
+        # Store the parameters and optimizer hyperparameters.
+        self.params = list(params)
+        self.lr = lr
+        self.b1 = b1
+        self.b2 = b2
+        self.eps = eps
+        self.weight_decay = weight_decay
+
+        # Initialize first and second moment estimates with zeros.
+        # Each moment tensor has the same shape as its corresponding parameter.
+        self.m = [
+            Tensor.zeros(*p.shape).contiguous().realize()
+            for p in self.params
+        ]
+
+        self.v = [
+            Tensor.zeros(*p.shape).contiguous().realize()
+            for p in self.params
+        ]
+
+        # Initialize the optimization step counter.
+        self.t = Tensor([0.0]).contiguous().realize()
+
+    def step(self, grads):
+        # Ensure that every parameter has a corresponding gradient.
+        if len(grads) != len(self.params):
+            raise ValueError(
+                "Number of gradients must match the number of parameters."
+            )
+
+        # Increment the optimization step counter.
+        t = self.t.assign(self.t + 1.0)
+
+        # Compute bias-correction factors.
+        bc1 = 1.0 - self.b1 ** t
+        bc2 = 1.0 - self.b2 ** t
+
+        # Update each parameter using its corresponding gradient.
+        for p, g, m, v in zip(self.params, grads, self.m, self.v):
+
+            # Apply L2 weight decay when enabled.
+            if self.weight_decay != 0.0:
+                g = g + self.weight_decay * p
+
+            # Update the first moment estimate.
+            m.assign(
+                self.b1 * m + (1.0 - self.b1) * g
+            )
+
+            # Update the second moment estimate.
+            v.assign(
+                self.b2 * v + (1.0 - self.b2) * g * g
+            )
+
+            # Apply the bias-corrected Adam parameter update.
+            p.assign(
+                p - self.lr * (m / bc1) / ((v / bc2).sqrt() + self.eps)
+            )
+
+        # Return all tensors that the caller must realize.
+        return [self.t, *self.params, *self.m, *self.v]
+

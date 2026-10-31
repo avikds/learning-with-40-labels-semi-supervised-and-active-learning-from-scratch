@@ -12,6 +12,7 @@ python scaffold.py
 
 - [x] **1.** load_forty_labels
 - [x] **2.** MLP
+- [x] **3.** Adam
 
 ---
 
