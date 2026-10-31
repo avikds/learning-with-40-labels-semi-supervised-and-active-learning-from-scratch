@@ -11,6 +11,7 @@ python scaffold.py
 ## Steps
 
 - [x] **1.** load_forty_labels
+- [x] **2.** MLP
 
 ---
 

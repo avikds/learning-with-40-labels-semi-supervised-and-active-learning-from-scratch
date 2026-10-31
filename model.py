@@ -82,3 +82,69 @@ def load_forty_labels(n_per_class=4, n_unlabeled=10000, n_test=2000, seed=0):
         "y_test": y_test[test_indices].astype(np.int64)
     }
 
+# Step 2 - MLP
+import math
+from tinygrad import Tensor
+
+
+class MLP:
+    def __init__(self, sizes, seed=0):
+        # Store the architecture as a list of layer widths.
+        self.sizes = list(sizes)
+
+        # Initialize a seeded random number generator.
+        rng = np.random.default_rng(seed)
+
+        # Store (weight, bias) pairs for every layer.
+        self.layers = []
+
+        # Construct the layers in order.
+        for i, (a, b) in enumerate(zip(self.sizes[:-1], self.sizes[1:])):
+
+            # Use He initialization for hidden layers and 1/a
+            # variance initialization for the final output layer.
+            if i == len(self.sizes) - 2:
+                std = math.sqrt(1.0 / a)
+            else:
+                std = math.sqrt(2.0 / a)
+
+            # Initialize weights from a normal distribution.
+            W = rng.normal(
+                loc=0.0,
+                scale=std,
+                size=(a, b)
+            ).astype(np.float32)
+
+            # Convert weights into realized, contiguous tinygrad tensors.
+            W = Tensor(W).contiguous().realize()
+
+            # Initialize biases to zero without consuming random numbers.
+            b = Tensor.zeros(b).contiguous().realize()
+
+            # Save the weight and bias tensors.
+            self.layers.append((W, b))
+
+    def parameters(self):
+        # Return all weights and biases in alternating order.
+        # Example: [W0, b0, W1, b1, W2, b2]
+        return [
+            param
+            for W, b in self.layers
+            for param in (W, b)
+        ]
+
+    def embed(self, x):
+        # Apply every hidden layer followed by a ReLU activation.
+        for W, b in self.layers[:-1]:
+            x = (x @ W + b).relu()
+
+        # Return the final hidden representation.
+        return x
+
+    def __call__(self, x):
+        # Obtain the final layer's weights and biases.
+        W_last, b_last = self.layers[-1]
+
+        # Compute the output logits without applying softmax.
+        return self.embed(x) @ W_last + b_last
+
