@@ -613,3 +613,64 @@ def train_ssl(model, X_lab, y_lab, X_unlab=None, unlabeled_loss=None, lam=1.0,
     # Return the recorded training history.
     return history
 
+# Step 7 - pca_fit
+def pca_fit(X, k):
+    # Convert input to a NumPy array.
+    X = np.asarray(X, dtype=np.float64)
+
+    # Validate the input dimensions.
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    n, d = X.shape
+
+    if n == 0 or d == 0:
+        raise ValueError("X must not be empty.")
+
+    if not isinstance(k, (int, np.integer)) or isinstance(k, (bool, np.bool_)):
+        raise ValueError("k must be an integer.")
+
+    if k <= 0 or k > min(n, d):
+        raise ValueError("k must be between 1 and min(n, d).")
+
+    # Step 1: Calculate the mean of each feature.
+    mean = X.mean(axis=0)
+
+    # Step 2: Center the data by subtracting the feature means.
+    X_centered = X - mean
+
+    # Step 3: Perform Singular Value Decomposition.
+    # Vt contains the right singular vectors in descending
+    # order of their corresponding singular values.
+    _, _, Vt = np.linalg.svd(
+        X_centered,
+        full_matrices=False
+    )
+
+    # Step 4: Select the first k principal components.
+    components = Vt[:k].copy()
+
+    # Step 5: Fix the sign ambiguity of each component.
+    # Make the entry with the largest absolute magnitude positive.
+    for i in range(k):
+        max_idx = np.argmax(np.abs(components[i]))
+
+        if components[i, max_idx] < 0:
+            components[i] *= -1.0
+
+    # Return the feature mean and principal components.
+    return mean, components
+
+
+def pca_transform(X, mean, components):
+    # Convert inputs to NumPy arrays.
+    X = np.asarray(X)
+    mean = np.asarray(mean)
+    components = np.asarray(components)
+
+    # Center the input data using the fitted mean.
+    X_centered = X - mean
+
+    # Project the centered data onto the principal components.
+    return X_centered @ components.T
+

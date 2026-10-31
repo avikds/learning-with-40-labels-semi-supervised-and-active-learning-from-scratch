@@ -16,6 +16,7 @@ python scaffold.py
 - [x] **4.** predict_proba
 - [x] **5.** augment_batch
 - [x] **6.** train_ssl
+- [x] **7.** pca_fit
 
 ---
 
