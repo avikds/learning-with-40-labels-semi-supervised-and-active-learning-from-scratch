@@ -1540,3 +1540,77 @@ def mutual_information_loss(model, xu, xu_aug, noise):
     # Minimizing H_cond - H_marg maximizes mutual information.
     return H_cond - H_marg
 
+# Step 16 - consistency_loss
+def consistency_loss(p, logits_prime, kind="mse"):
+    # Treat clean-input probabilities as constant targets.
+    p = p.detach()
+
+    # Calculate probabilities for the perturbed inputs.
+    p_prime = logits_prime.softmax(-1)
+
+    # Validate the probability and logits dimensions.
+    if p.shape != logits_prime.shape:
+        raise ValueError(
+            "p and logits_prime must have the same shape."
+        )
+
+    # ---------------------------------------------------------
+    # 1. Mean squared error consistency loss.
+    # ---------------------------------------------------------
+
+    if kind == "mse":
+        # Squared L2 distance between the two distributions.
+        loss = (p - p_prime) ** 2
+
+        # Sum over classes and average over the batch.
+        return loss.sum(axis=-1).mean()
+
+    # ---------------------------------------------------------
+    # 2. KL divergence consistency loss.
+    # ---------------------------------------------------------
+
+    elif kind == "kl":
+        # Calculate KL(p || p_prime).
+        # A small epsilon ensures numerical stability.
+        log_p = (p + 1e-8).log()
+
+        log_p_prime = logits_prime.log_softmax(-1)
+
+        loss = p * (log_p - log_p_prime)
+
+        # Sum over classes and average over the batch.
+        return loss.sum(axis=-1).mean()
+
+    # Reject unsupported consistency loss types.
+    else:
+        raise ValueError(
+            "kind must be either 'mse' or 'kl'."
+        )
+
+
+def make_consistency_loss(kind="mse"):
+    # Validate the requested loss type.
+    if kind not in ("mse", "kl"):
+        raise ValueError(
+            "kind must be either 'mse' or 'kl'."
+        )
+
+    # Return a trainer-compatible unlabeled loss function.
+    def consistency_objective(model, xu, xu_aug, noise):
+
+        # Generate probabilities for the clean unlabeled inputs.
+        # Detach them so they serve as fixed reference targets.
+        p = model(xu).softmax(-1).detach()
+
+        # Generate logits for the perturbed unlabeled inputs.
+        logits_prime = model(xu_aug)
+
+        # Calculate the selected consistency loss.
+        return consistency_loss(
+            p,
+            logits_prime,
+            kind=kind
+        )
+
+    return consistency_objective
+

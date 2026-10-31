@@ -25,6 +25,7 @@ python scaffold.py
 - [x] **13.** self_training_rounds
 - [x] **14.** unlabeled_losses
 - [x] **15.** mutual_information_loss
+- [x] **16.** consistency_loss
 
 ---
 
