@@ -8,29 +8,134 @@ import numpy as np
 
 # Step 1 - load_forty_labels
 import numpy as np
-import dml_data
+import gzip
+import struct
+import hashlib
+from pathlib import Path
+from urllib.request import urlretrieve
+
 
 _MNIST = {}
 
+_MNIST_DIR = Path.cwd() / "data" / "mnist"
 
-def load_forty_labels(n_per_class=4, n_unlabeled=10000, n_test=2000, seed=0):
-    # Load and cache MNIST so repeated calls do not reload the dataset.
-    global _MNIST
+_MNIST_FILES = {
+    "train-images-idx3-ubyte.gz": "f68b3c2dcbeaaa9fbdd348bbdeb94873",
+    "train-labels-idx1-ubyte.gz": "d53e105ee54ea40749a09fcbcd1e9432",
+    "t10k-images-idx3-ubyte.gz": "9fb629c4189551a2d022fa330f9573f3",
+    "t10k-labels-idx1-ubyte.gz": "ec29112dd5afa0611ce80d1b7f02629c",
+}
 
+
+def _download_mnist():
+    """Download and verify MNIST files if they are not already cached."""
+    _MNIST_DIR.mkdir(parents=True, exist_ok=True)
+
+    base_urls = [
+        "https://ossci-datasets.s3.amazonaws.com/mnist/",
+        "https://storage.googleapis.com/cvdf-datasets/mnist/",
+    ]
+
+    for filename, expected_md5 in _MNIST_FILES.items():
+        path = _MNIST_DIR / filename
+
+        if path.exists():
+            actual_md5 = hashlib.md5(path.read_bytes()).hexdigest()
+            if actual_md5 == expected_md5:
+                continue
+            path.unlink()
+
+        downloaded = False
+
+        for base_url in base_urls:
+            try:
+                urlretrieve(base_url + filename, str(path))
+
+                actual_md5 = hashlib.md5(path.read_bytes()).hexdigest()
+
+                if actual_md5 == expected_md5:
+                    downloaded = True
+                    break
+
+                path.unlink(missing_ok=True)
+
+            except Exception:
+                path.unlink(missing_ok=True)
+
+        if not downloaded:
+            raise RuntimeError(
+                f"Could not download or verify MNIST file: {filename}"
+            )
+
+
+def _read_mnist_images(path):
+    """Read images from an MNIST IDX gzip file."""
+    with gzip.open(path, "rb") as f:
+        magic, count, rows, cols = struct.unpack(">IIII", f.read(16))
+        if magic != 2051:
+            raise ValueError("Invalid MNIST image file")
+
+        images = np.frombuffer(
+            f.read(), dtype=np.uint8
+        ).reshape(count, rows, cols)
+
+    return images
+
+
+def _read_mnist_labels(path):
+    """Read labels from an MNIST IDX gzip file."""
+    with gzip.open(path, "rb") as f:
+        magic, count = struct.unpack(">II", f.read(8))
+        if magic != 2049:
+            raise ValueError("Invalid MNIST label file")
+
+        labels = np.frombuffer(f.read(), dtype=np.uint8)
+
+    return labels.astype(np.int64)
+
+
+def _load_mnist():
+    """Load and cache the MNIST dataset."""
+    _download_mnist()
+
+    return {
+        "x_train": _read_mnist_images(
+            _MNIST_DIR / "train-images-idx3-ubyte.gz"
+        ),
+        "y_train": _read_mnist_labels(
+            _MNIST_DIR / "train-labels-idx1-ubyte.gz"
+        ),
+        "x_test": _read_mnist_images(
+            _MNIST_DIR / "t10k-images-idx3-ubyte.gz"
+        ),
+        "y_test": _read_mnist_labels(
+            _MNIST_DIR / "t10k-labels-idx1-ubyte.gz"
+        ),
+    }
+
+
+def load_forty_labels(
+    n_per_class=4,
+    n_unlabeled=10000,
+    n_test=2000,
+    seed=0
+):
+    """Build the labeled, unlabeled, and fixed test MNIST splits."""
+
+    # Load MNIST only once.
     if not _MNIST:
-        _MNIST.update(dml_data.load("mnist"))
+        _MNIST.update(_load_mnist())
 
     x_train = _MNIST["x_train"]
     y_train = _MNIST["y_train"]
     x_test = _MNIST["x_test"]
     y_test = _MNIST["y_test"]
 
-    # Create a reproducible random number generator.
+    # Generator for labeled and unlabeled training samples.
     rng = np.random.default_rng(seed)
 
-    # Step 1: Select n_per_class labeled samples from each digit class.
-    # Concatenation preserves class-major ordering (0 through 9).
-    labeled_indices = []
+    # 1. Select labeled indices class by class (0 through 9).
+    labeled_parts = []
 
     for c in range(10):
         class_indices = np.flatnonzero(y_train == c)
@@ -41,12 +146,15 @@ def load_forty_labels(n_per_class=4, n_unlabeled=10000, n_test=2000, seed=0):
             replace=False
         )
 
-        labeled_indices.append(selected)
+        labeled_parts.append(selected)
 
-    labeled = np.concatenate(labeled_indices)
+    labeled = np.concatenate(labeled_parts)
 
-    # Step 2: Select the unlabeled pool from the remaining training samples.
-    rest = np.setdiff1d(np.arange(60000), labeled)
+    # 2. Select unlabeled samples from the remaining training indices.
+    rest = np.setdiff1d(
+        np.arange(len(y_train)),
+        labeled
+    )
 
     unlabeled = rng.choice(
         rest,
@@ -54,32 +162,38 @@ def load_forty_labels(n_per_class=4, n_unlabeled=10000, n_test=2000, seed=0):
         replace=False
     )
 
-    # Step 3: Select test samples using an independent, fixed random seed.
-    # This ensures every experiment uses exactly the same test subset.
+    # 3. Fixed test subset, independent of the training seed.
     test_rng = np.random.default_rng(12345)
 
     test_indices = test_rng.choice(
-        10000,
+        len(y_test),
         n_test,
         replace=False
     )
 
-    # Step 4: Flatten images into 784 features, convert to float32,
-    # and normalize pixel values to the range [0, 1].
-    X_lab = x_train[labeled].reshape(-1, 784).astype(np.float32) / 255.0
-    X_unlab = x_train[unlabeled].reshape(-1, 784).astype(np.float32) / 255.0
-    X_test = x_test[test_indices].reshape(-1, 784).astype(np.float32) / 255.0
+    # 4. Flatten images and scale pixel values to [0, 1].
+    X_lab = (
+        x_train[labeled].reshape(len(labeled), 784).astype(np.float32)
+        / 255.0
+    )
 
-    # Step 5: Return the labeled, unlabeled, and test datasets.
+    X_unlab = (
+        x_train[unlabeled].reshape(len(unlabeled), 784).astype(np.float32)
+        / 255.0
+    )
+
+    X_test = (
+        x_test[test_indices].reshape(len(test_indices), 784).astype(np.float32)
+        / 255.0
+    )
+
     return {
         "X_lab": X_lab,
         "y_lab": y_train[labeled].astype(np.int64),
-
         "X_unlab": X_unlab,
         "y_unlab": y_train[unlabeled].astype(np.int64),
-
         "X_test": X_test,
-        "y_test": y_test[test_indices].astype(np.int64)
+        "y_test": y_test[test_indices].astype(np.int64),
     }
 
 # Step 2 - MLP
