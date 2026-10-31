@@ -20,6 +20,7 @@ python scaffold.py
 - [x] **8.** knn_graph
 - [x] **9.** label_propagation
 - [x] **10.** harmonic_solution
+- [x] **11.** train_soft
 
 ---
 

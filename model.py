@@ -1096,3 +1096,115 @@ def harmonic_solution(W, labeled_idx, y_labeled, n_classes):
     # Return the complete label distribution matrix.
     return Y.astype(np.float64)
 
+# Step 11 - train_soft
+def train_soft(model, X, P, steps=500, batch=256, lr=1e-3,
+               tau=1.0, seed=0, augment=None):
+
+    # Validate the training configuration.
+    if steps <= 0:
+        raise ValueError("steps must be positive.")
+
+    if batch <= 0:
+        raise ValueError("batch must be positive.")
+
+    if tau <= 0:
+        raise ValueError("tau must be positive.")
+
+    # Convert input data and soft targets to float32.
+    X = np.asarray(X, dtype=np.float32)
+    P = np.asarray(P, dtype=np.float32)
+
+    # Validate input dimensions.
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    if P.ndim != 2:
+        raise ValueError("P must be a 2D array.")
+
+    if len(X) == 0 or len(X) != len(P):
+        raise ValueError("X and P must contain the same nonzero number of samples.")
+
+    if not np.all(np.isfinite(X)) or not np.all(np.isfinite(P)):
+        raise ValueError("X and P must contain only finite values.")
+
+    if np.any(P < 0):
+        raise ValueError("Soft targets P must be non-negative.")
+
+    if not np.allclose(P.sum(axis=1), 1.0, atol=1e-5):
+        raise ValueError("Each row of P must sum to one.")
+
+    # Initialize a reproducible random number generator.
+    rng = np.random.default_rng(seed)
+
+    # Initialize the custom Adam optimizer.
+    params = model.parameters()
+    opt = Adam(params, lr=lr)
+
+    # ---------------------------------------------------------
+    # 1. Define the TinyJit training step.
+    # ---------------------------------------------------------
+
+    @TinyJit
+    def train_step(x, p):
+
+        # Calculate temperature-scaled model log probabilities.
+        log_probs = (model(x) / tau).log_softmax(-1)
+
+        # Soft-target cross-entropy loss:
+        # L = -mean_i sum_c P[i,c] * log_probs[i,c]
+        loss = -(p * log_probs).sum(axis=-1).mean()
+
+        # Calculate gradients with respect to model parameters.
+        grads = loss.gradient(*params)
+
+        # Update parameters using the custom Adam optimizer.
+        updated = opt.step(grads)
+
+        # Realize the loss and all optimizer tensors.
+        Tensor.realize(loss, *updated)
+
+        return loss
+
+    # ---------------------------------------------------------
+    # 2. Training loop.
+    # ---------------------------------------------------------
+
+    last_loss = 0.0
+
+    for _ in range(steps):
+
+        # Randomly sample a minibatch of indices.
+        j = rng.integers(
+            0,
+            len(X),
+            size=batch
+        )
+
+        # Extract the corresponding input images.
+        x_batch = X[j]
+
+        # Apply augmentation if provided.
+        if augment is not None:
+            x_batch = augment(x_batch, rng)
+
+        # Retrieve the corresponding soft-target distributions.
+        p_batch = P[j]
+
+        # Convert minibatches into tinygrad tensors.
+        x_t = Tensor(
+            np.asarray(x_batch, dtype=np.float32)
+        )
+
+        p_t = Tensor(
+            np.asarray(p_batch, dtype=np.float32)
+        )
+
+        # Execute the TinyJit training step.
+        loss = train_step(x_t, p_t)
+
+        # Store the latest loss as a Python float.
+        last_loss = float(loss.item())
+
+    # Return the final training loss.
+    return last_loss
+
