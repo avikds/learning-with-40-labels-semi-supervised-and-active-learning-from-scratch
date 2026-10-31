@@ -21,6 +21,7 @@ python scaffold.py
 - [x] **9.** label_propagation
 - [x] **10.** harmonic_solution
 - [x] **11.** train_soft
+- [x] **12.** select_pseudo_labels
 
 ---
 

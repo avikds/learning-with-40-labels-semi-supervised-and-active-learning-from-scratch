@@ -1208,3 +1208,85 @@ def train_soft(model, X, P, steps=500, batch=256, lr=1e-3,
     # Return the final training loss.
     return last_loss
 
+# Step 12 - select_pseudo_labels
+def select_pseudo_labels(probs, threshold, y_true=None):
+    # Convert predicted probabilities into a NumPy array.
+    probs = np.asarray(probs, dtype=np.float64)
+
+    # Validate the probability array.
+    if probs.ndim != 2:
+        raise ValueError("probs must be a 2D array of shape (n, n_classes).")
+
+    if probs.shape[1] == 0:
+        raise ValueError("probs must contain at least one class.")
+
+    if not np.all(np.isfinite(probs)):
+        raise ValueError("probs must contain only finite values.")
+
+    if np.any(probs < 0):
+        raise ValueError("Probabilities must be non-negative.")
+
+    if not np.isclose(probs.sum(axis=1), 1.0, atol=1e-5).all():
+        raise ValueError("Each probability row must sum to one.")
+
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be between 0 and 1.")
+
+    n = len(probs)
+
+    # ---------------------------------------------------------
+    # 1. Find the predicted class and its confidence.
+    # ---------------------------------------------------------
+
+    # Predicted class for each sample.
+    predicted_labels = np.argmax(probs, axis=1)
+
+    # Maximum predicted probability for each sample.
+    confidence = np.max(probs, axis=1)
+
+    # ---------------------------------------------------------
+    # 2. Select samples meeting the confidence threshold.
+    # ---------------------------------------------------------
+
+    # np.flatnonzero returns indices in increasing order.
+    idx = np.flatnonzero(confidence >= threshold).astype(np.int64)
+
+    # Obtain pseudo-labels for the selected samples.
+    labels = predicted_labels[idx].astype(np.int64)
+
+    # Number of selected pseudo-labels.
+    n_selected = int(len(idx))
+
+    # Fraction of the pool selected.
+    coverage = float(n_selected / n) if n > 0 else 0.0
+
+    # ---------------------------------------------------------
+    # 3. Calculate pseudo-label accuracy for diagnostics.
+    # ---------------------------------------------------------
+
+    pseudo_accuracy = None
+
+    if y_true is not None:
+        y_true = np.asarray(y_true).reshape(-1)
+
+        if len(y_true) != n:
+            raise ValueError("y_true must have the same length as probs.")
+
+        # Calculate accuracy only when at least one sample is selected.
+        if n_selected > 0:
+            pseudo_accuracy = float(
+                np.mean(labels == y_true[idx])
+            )
+
+    # ---------------------------------------------------------
+    # 4. Return the selection results.
+    # ---------------------------------------------------------
+
+    return {
+        "idx": idx,
+        "labels": labels,
+        "n_selected": n_selected,
+        "coverage": coverage,
+        "accuracy": pseudo_accuracy
+    }
+
