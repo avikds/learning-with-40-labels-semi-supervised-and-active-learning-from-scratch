@@ -674,3 +674,152 @@ def pca_transform(X, mean, components):
     # Project the centered data onto the principal components.
     return X_centered @ components.T
 
+# Step 8 - knn_graph
+import scipy.sparse as sp
+
+
+def knn_graph(Z, k=10, sigma=None):
+    # Convert input data to float64.
+    Z = np.asarray(Z, dtype=np.float64)
+
+    # Validate the input.
+    if Z.ndim != 2:
+        raise ValueError("Z must be a 2D array.")
+
+    n, d = Z.shape
+
+    if n < 2 or d == 0:
+        raise ValueError("Z must contain at least two non-empty samples.")
+
+    if not np.all(np.isfinite(Z)):
+        raise ValueError("Z must contain only finite values.")
+
+    if not isinstance(k, (int, np.integer)) or isinstance(k, (bool, np.bool_)):
+        raise ValueError("k must be an integer.")
+
+    if k < 1 or k >= n:
+        raise ValueError("k must be between 1 and n-1.")
+
+    # Store nearest-neighbor indices and distances.
+    all_indices = []
+    all_distances = []
+
+    # Precompute squared norms of all feature vectors.
+    norms = np.sum(Z * Z, axis=1)
+
+    # ---------------------------------------------------------
+    # 1. Compute k nearest neighbors in blocks of 2000 rows.
+    # ---------------------------------------------------------
+
+    block_size = 2000
+
+    for start in range(0, n, block_size):
+
+        end = min(start + block_size, n)
+
+        # Extract the current block.
+        block = Z[start:end]
+
+        # Compute squared Euclidean distances using:
+        # ||x-y||² = ||x||² + ||y||² - 2(x @ y)
+        d2 = (
+            norms[start:end, None]
+            + norms[None, :]
+            - 2.0 * (block @ Z.T)
+        )
+
+        # Remove small negative values caused by floating-point errors.
+        np.maximum(d2, 0.0, out=d2)
+
+        # Exclude each point from its own neighbor candidates.
+        d2[
+            np.arange(end - start),
+            np.arange(start, end)
+        ] = np.inf
+
+        # Find the indices of the k nearest neighbors.
+        neighbor_idx = np.argpartition(
+            d2,
+            kth=k - 1,
+            axis=1
+        )[:, :k]
+
+        # Extract the corresponding squared distances.
+        neighbor_d2 = np.take_along_axis(
+            d2,
+            neighbor_idx,
+            axis=1
+        )
+
+        # Convert squared distances into Euclidean distances.
+        neighbor_dist = np.sqrt(neighbor_d2)
+
+        # Store the results for the current block.
+        all_indices.append(neighbor_idx)
+        all_distances.append(neighbor_dist)
+
+    # Combine results from all blocks.
+    indices = np.concatenate(all_indices, axis=0)
+    distances = np.concatenate(all_distances, axis=0)
+
+    # ---------------------------------------------------------
+    # 2. Determine the Gaussian kernel bandwidth.
+    # ---------------------------------------------------------
+
+    if sigma is None:
+        sigma = float(np.median(distances))
+
+    else:
+        sigma = float(sigma)
+
+        if not np.isfinite(sigma) or sigma <= 0:
+            raise ValueError("sigma must be a positive finite number.")
+
+    # ---------------------------------------------------------
+    # 3. Compute Gaussian similarity weights.
+    # ---------------------------------------------------------
+
+    # Flatten nearest-neighbor distances.
+    dist = distances.reshape(-1)
+
+    if sigma == 0.0:
+        # Handle the degenerate case where all median neighbor
+        # distances are zero, avoiding division by zero.
+        weights = (dist == 0.0).astype(np.float64)
+
+    else:
+        weights = np.exp(
+            -(dist ** 2) / (2.0 * sigma ** 2)
+        )
+
+    # ---------------------------------------------------------
+    # 4. Construct the directed sparse kNN graph.
+    # ---------------------------------------------------------
+
+    # Each point contributes exactly k outgoing edges.
+    rows = np.repeat(np.arange(n), k)
+    cols = indices.reshape(-1)
+
+    W = sp.csr_matrix(
+        (weights, (rows, cols)),
+        shape=(n, n),
+        dtype=np.float64
+    )
+
+    # ---------------------------------------------------------
+    # 5. Symmetrize the graph.
+    # ---------------------------------------------------------
+
+    # An edge exists if either point selects the other
+    # as one of its k nearest neighbors.
+    W = W.maximum(W.T).tocsr()
+
+    # Ensure the diagonal contains only zeros.
+    W.setdiag(0.0)
+
+    # Remove explicitly stored zero entries.
+    W.eliminate_zeros()
+
+    # Return a float64 CSR sparse matrix.
+    return W.astype(np.float64)
+

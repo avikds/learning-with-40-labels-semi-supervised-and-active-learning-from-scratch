@@ -17,6 +17,7 @@ python scaffold.py
 - [x] **5.** augment_batch
 - [x] **6.** train_ssl
 - [x] **7.** pca_fit
+- [x] **8.** knn_graph
 
 ---
 
