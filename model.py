@@ -215,3 +215,46 @@ class Adam:
         # Return all tensors that the caller must realize.
         return [self.t, *self.params, *self.m, *self.v]
 
+# Step 4 - predict_proba
+def predict_proba(model, X, batch=1000):
+    # Validate the batch size.
+    if batch <= 0:
+        raise ValueError("batch must be a positive integer.")
+
+    # Store probability predictions for each batch.
+    probabilities = []
+
+    # Process the input data in consecutive chunks.
+    for start in range(0, len(X), batch):
+        end = start + batch
+
+        # Extract the current batch and convert it into a tinygrad Tensor.
+        x_batch = Tensor(X[start:end])
+
+        # Generate logits, apply softmax, and convert predictions to NumPy.
+        probs = model(x_batch).softmax(-1).numpy()
+
+        # Store the probabilities for the current batch.
+        probabilities.append(probs)
+
+    # Concatenate all batch predictions into one NumPy array.
+    if not probabilities:
+        raise ValueError("X must contain at least one sample.")
+
+    return np.concatenate(probabilities, axis=0)
+
+
+def accuracy(model, X, y):
+    # Generate class probabilities for the input dataset.
+    probabilities = predict_proba(model, X)
+
+    # Check that the number of predictions matches the number of labels.
+    if len(probabilities) != len(y):
+        raise ValueError("X and y must contain the same number of samples.")
+
+    # Predict the class with the highest probability.
+    predictions = np.argmax(probabilities, axis=1)
+
+    # Calculate and return the fraction of correct predictions.
+    return float(np.mean(predictions == y))
+
