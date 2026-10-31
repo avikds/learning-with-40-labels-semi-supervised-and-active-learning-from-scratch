@@ -32,6 +32,7 @@ python scaffold.py
 - [x] **20.** pretrain_simclr
 - [x] **21.** with_new_head
 - [x] **22.** distill
+- [x] **23.** Ensemble
 
 ---
 

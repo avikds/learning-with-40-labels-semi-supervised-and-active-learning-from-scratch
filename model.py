@@ -2115,3 +2115,104 @@ def distill(teacher, student, X, tau=2.0, steps=600, batch=256,
     # Return teacher-student agreement.
     return agreement
 
+# Step 23 - Ensemble
+class Ensemble:
+    def __init__(self, sizes, M=5, seed=0):
+        # Store the network architecture and ensemble size.
+        self.sizes = list(sizes)
+        self.M = M
+
+        if M <= 0:
+            raise ValueError("M must be positive.")
+
+        if len(self.sizes) < 2 or any(s <= 0 for s in self.sizes):
+            raise ValueError("sizes must contain at least two positive layer widths.")
+
+        # Initialize a reproducible random number generator.
+        rng = np.random.default_rng(seed)
+
+        # Store stacked weights and biases for all ensemble members.
+        self.layers = []
+
+        # Construct each layer.
+        for i, (a, b) in enumerate(zip(self.sizes[:-1], self.sizes[1:])):
+
+            # Use He initialization for hidden layers.
+            # Use the final-layer initialization scale for output layers.
+            if i == len(self.sizes) - 2:
+                std = math.sqrt(1.0 / a)
+            else:
+                std = math.sqrt(2.0 / a)
+
+            # Initialize independent weights for all M members.
+            # Shape: (M, a, b)
+            W = rng.normal(
+                loc=0.0,
+                scale=std,
+                size=(M, a, b)
+            ).astype(np.float32)
+
+            # Convert weights to realized, contiguous tinygrad tensors.
+            W = Tensor(W).contiguous().realize()
+
+            # Initialize zero biases for all ensemble members.
+            # Shape: (M, 1, b)
+            b_tensor = Tensor.zeros(
+                M, 1, b
+            ).contiguous().realize()
+
+            # Store the weight and bias tensors.
+            self.layers.append((W, b_tensor))
+
+    def parameters(self):
+        # Return all weights and biases in alternating order.
+        # Example: [W0, b0, W1, b1, ...]
+        return [
+            param
+            for W, b in self.layers
+            for param in (W, b)
+        ]
+
+    def __call__(self, x):
+        # Convert the input into a tinygrad Tensor when necessary.
+        if not isinstance(x, Tensor):
+            x = Tensor(x)
+
+        # Accept either a shared batch (B, D)
+        # or separate batches for each member (M, B, D).
+        if len(x.shape) == 2:
+            # Expand the shared input batch across all ensemble members.
+            x = x.unsqueeze(0).expand(
+                self.M, *x.shape
+            )
+
+        elif len(x.shape) == 3:
+            # Check that the leading dimension matches the ensemble size.
+            if x.shape[0] != self.M:
+                raise ValueError(
+                    "The first dimension of x must equal the ensemble size M."
+                )
+
+        else:
+            raise ValueError(
+                "x must have shape (B, D) or (M, B, D)."
+            )
+
+        # -----------------------------------------------------
+        # Forward propagation through all ensemble layers.
+        # -----------------------------------------------------
+
+        for i, (W, b) in enumerate(self.layers):
+
+            # Batched matrix multiplication:
+            # (M, B, a) @ (M, a, b) -> (M, B, b)
+            x = x @ W + b
+
+            # Apply ReLU after every hidden layer.
+            if i < len(self.layers) - 1:
+                x = x.relu()
+
+        # Return logits for every ensemble member.
+        # Shape: (M, B, C)
+        return x
+
