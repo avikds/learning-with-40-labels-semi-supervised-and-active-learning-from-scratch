@@ -14,6 +14,7 @@ python scaffold.py
 - [x] **2.** MLP
 - [x] **3.** Adam
 - [x] **4.** predict_proba
+- [x] **5.** augment_batch
 
 ---
 

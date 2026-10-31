@@ -258,3 +258,107 @@ def accuracy(model, X, y):
     # Calculate and return the fraction of correct predictions.
     return float(np.mean(predictions == y))
 
+# Step 5 - augment_batch
+def augment_batch(X, rng, max_shift=2, flip_prob=0.0, noise_std=0.0, cutout=0):
+    # Validate the input dimensions.
+    X = np.asarray(X, dtype=np.float32)
+
+    if X.ndim != 2 or X.shape[1] != 784:
+        raise ValueError("X must have shape (n, 784).")
+
+    if max_shift < 0:
+        raise ValueError("max_shift must be non-negative.")
+
+    if not 0.0 <= flip_prob <= 1.0:
+        raise ValueError("flip_prob must be between 0 and 1.")
+
+    if cutout < 0 or cutout > 28:
+        raise ValueError("cutout must be between 0 and 28.")
+
+    if noise_std < 0:
+        raise ValueError("noise_std must be non-negative.")
+
+    n = len(X)
+
+    # Reshape flattened images into 28x28 format.
+    # Create a copy so the original input X is never modified.
+    images = X.reshape(n, 28, 28).copy()
+
+    # ---------------------------------------------------------
+    # 1. Random translation (zero-padded shifting)
+    # ---------------------------------------------------------
+    if max_shift > 0:
+        s = max_shift
+
+        # Add zero-padding on all four sides.
+        padded = np.pad(
+            images,
+            ((0, 0), (s, s), (s, s)),
+            mode="constant"
+        )
+
+        # Draw random vertical and horizontal crop offsets.
+        oy = rng.integers(0, 2 * s + 1, size=n)
+        ox = rng.integers(0, 2 * s + 1, size=n)
+
+        # Extract a 28x28 window for every image.
+        shifted = np.empty_like(images)
+
+        for i in range(n):
+            shifted[i] = padded[
+                i,
+                oy[i]:oy[i] + 28,
+                ox[i]:ox[i] + 28
+            ]
+
+        images = shifted
+
+    # ---------------------------------------------------------
+    # 2. Random horizontal flipping
+    # ---------------------------------------------------------
+
+    # Randomly select images to flip from left to right.
+    flip_mask = rng.random(n) < flip_prob
+
+    images[flip_mask] = images[flip_mask, :, ::-1]
+
+    # ---------------------------------------------------------
+    # 3. Random cutout augmentation
+    # ---------------------------------------------------------
+    if cutout > 0:
+
+        # Draw the top-left corner coordinates of each cutout.
+        cy = rng.integers(0, 28 - cutout + 1, size=n)
+        cx = rng.integers(0, 28 - cutout + 1, size=n)
+
+        # Set the selected square regions to zero.
+        for i in range(n):
+            images[
+                i,
+                cy[i]:cy[i] + cutout,
+                cx[i]:cx[i] + cutout
+            ] = 0.0
+
+    # ---------------------------------------------------------
+    # 4. Add Gaussian noise
+    # ---------------------------------------------------------
+    if noise_std > 0.0:
+
+        noise = rng.normal(
+            loc=0.0,
+            scale=noise_std,
+            size=images.shape
+        )
+
+        images += noise
+
+    # ---------------------------------------------------------
+    # 5. Clip pixel values and restore flattened dimensions
+    # ---------------------------------------------------------
+
+    # Keep all pixel values within [0, 1].
+    images = np.clip(images, 0.0, 1.0)
+
+    # Return flattened float32 images.
+    return images.reshape(n, 784).astype(np.float32)
+
